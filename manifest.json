@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.flyingbasshot.sshdrops",
+  "name": "SSHDrops",
+  "version": "1.0.0",
+  "author": "FlyingBassHot",
+  "license": "MIT",
+  "description": "A bar panel for saved SSH hosts: fuzzy search, live session status, and one-click connect.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "SSHDrops",
+    "description": "Saved SSH hosts with fuzzy search, live session status, and one-click connect from the bar.",
+    "category": "Network",
+    "aliases": [
+      "ssh",
+      "sshdrops",
+      "remote-hosts",
+      "ssh-hosts"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "connectMode": "shell",
+      "showLabel": true,
+      "sessionPollSec": 15,
+      "importTildeSshConfig": true
+    },
+    "schema": [
+      {
+        "key": "connectMode",
+        "type": "enum",
+        "label": "Default connect mode",
+        "description": "Shell runs ssh directly. Shell + reconnect routes through Omarchy's bash ssh() wrapper, which cleans up terminal modes and retries after a dropped session.",
+        "options": [
+          "shell",
+          "shell-reconnect"
+        ],
+        "defaultValue": "shell"
+      },
+      {
+        "key": "showLabel",
+        "type": "boolean",
+        "label": "Show host count in the bar",
+        "description": "Show the saved-host count next to the icon.",
+        "defaultValue": true
+      },
+      {
+        "key": "sessionPollSec",
+        "type": "integer",
+        "label": "Session poll interval (seconds)",
+        "description": "How often to rescan for live SSH sessions. Sessions are also rescanned whenever the panel opens.",
+        "min": 5,
+        "max": 300,
+        "step": 5,
+        "defaultValue": 15
+      },
+      {
+        "key": "importTildeSshConfig",
+        "type": "boolean",
+        "label": "Offer ~/.ssh/config import",
+        "description": "Show the import button that reads Host aliases out of ~/.ssh/config. Imported hosts store only the alias, so OpenSSH still applies IdentityFile, ProxyJump, and Match rules from your own config.",
+        "defaultValue": true
+      }
+    ]
+  }
+}
