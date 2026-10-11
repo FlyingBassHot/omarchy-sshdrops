@@ -300,6 +300,12 @@ Item {
   //
   // The host name is single-quote escaped with Util.shellQuote, so a name that
   // contains shell metacharacters lands as one literal argument.
+  //
+  // `shell-reconnect` runs the ssh command under `bash -ic` instead: Omarchy's
+  // reconnecting `ssh()` is a bash function defined in the interactive rc
+  // chain and invisible to a plain exec, so `-i` is what pulls that rc in and
+  // `-c` keeps the terminal from dropping into a prompt. The wrapper then
+  // disarms the terminal modes a dropped session leaves armed and retries.
   function connect(host) {
     if (!Model.isConnectable(host)) {
       root.lastError = "That host has no hostname or alias"
@@ -312,20 +318,12 @@ Item {
       return false
     }
 
-    var quoted = destination.map(Util.shellQuote).join(" ")
     var mode = root.modeFor(host)
-    var script
-
-    if (mode === "shell-reconnect") {
-      // Omarchy's reconnecting `ssh()` is a bash function defined in the
-      // interactive rc chain, invisible to a plain exec. `-i` is what pulls
-      // that rc in; `-c` keeps the terminal from dropping into a prompt
-      // instead of running the command. The wrapper then disarms the terminal
-      // modes a dropped session leaves armed and retries the connection.
-      script = "bash -ic " + Util.shellQuote("ssh " + quoted)
-    } else {
-      script = "ssh " + quoted
-    }
+    // Model.connectCommand is the same helper the editor renders above the
+    // form, so the command the user reads is the one that runs.
+    var script = mode === "shell-reconnect"
+      ? "bash -ic " + Util.shellQuote("ssh " + destination.map(Util.shellQuote).join(" "))
+      : "ssh " + destination.map(Util.shellQuote).join(" ")
 
     Util.execArgv([
       "setsid", "uwsm-app", "--",

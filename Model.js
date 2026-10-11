@@ -63,6 +63,12 @@ function displayName(host) {
 
 // What we actually hand to ssh: the alias when there is one, otherwise
 // [user@]host. Returns the argument vector, never a shell string.
+//
+// An alias wins over a hostname because that is the whole point of using one
+// — it lets ssh resolve IdentityFile, ProxyJump, and Match rules from the
+// user's own config. It also means a host with both filled in connects via
+// the alias, which is why the panel shows the exact command and warns when the
+// alias is not defined anywhere.
 function destinationArgs(host) {
   if (!host) return []
   if (host.alias) return [host.alias]
@@ -70,6 +76,20 @@ function destinationArgs(host) {
   if (destination === "") return []
   if (host.user) destination = host.user + "@" + destination
   return [destination]
+}
+
+// The command the panel will run, for display. Mirrors destinationArgs so
+// what the user reads is exactly what gets executed.
+function connectCommand(host, mode) {
+  var destination = destinationArgs(host)
+  if (destination.length === 0) return ""
+  var quoted = destination.map(shellQuote).join(" ")
+  return mode === "shell-reconnect" ? "bash -ic 'ssh " + quoted + "'" : "ssh " + quoted
+}
+
+// Single-quote a value for bash, the same escaping Util.shellQuote applies.
+function shellQuote(value) {
+  return "'" + String(value === undefined || value === null ? "" : value).replace(/'/g, "'\\''") + "'"
 }
 
 // A host is connectable when ssh would have something to dial.

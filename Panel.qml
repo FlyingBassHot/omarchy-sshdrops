@@ -422,15 +422,87 @@ Panel {
               elide: Text.ElideRight
             }
 
-            Text {
+            // The exact command that will run, kept in sync with
+            // Service.connect by sharing Model.connectCommand. Showing it is
+            // what makes an alias silently overriding a hostname visible
+            // instead of something the user discovers as a window that closes
+            // instantly.
+            Rectangle {
               width: parent.width
-              text: root.editing.alias !== ""
-                ? "Connecting runs: ssh " + root.editing.alias + "  —  ssh resolves it from your own config."
-                : "Connecting runs: ssh " + (root.editing.user !== "" ? root.editing.user + "@" : "") + (root.editing.host || "…")
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
+              height: commandText.implicitHeight + Style.space(12)
+              radius: Style.cornerRadius
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07)
+              border.width: 1
+              border.color: root.dim
+
+              Text {
+                id: commandText
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.margins: Style.space(6)
+                textFormat: Text.PlainText
+                text: root.editing.alias !== "" || root.editing.host !== ""
+                  ? "Will run:  " + Model.connectCommand(root.editing, service.modeFor(root.editing))
+                  : "Fill in a hostname or an ssh alias to connect"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+              }
+            }
+
+            // Filling both fields is how the plugin ended up ignoring a
+            // perfectly good hostname. Say which one wins, and offer the fix.
+            Rectangle {
+              visible: root.editing.alias !== "" && root.editing.host !== ""
+              width: parent.width
+              height: conflictBody.implicitHeight + Style.space(16)
+              radius: Style.cornerRadius
+              color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.10)
+              border.width: 1
+              border.color: root.urgent
+
+              Column {
+                id: conflictBody
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.margins: Style.space(8)
+                spacing: Style.space(6)
+
+                Text {
+                  width: parent.width
+                  text: "Both an alias and a hostname are set. The alias wins, and ssh will look up \"" + root.editing.alias + "\" in ~/.ssh/config."
+                  color: root.urgent
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  wrapMode: Text.WordWrap
+                }
+
+                Text {
+                  width: parent.width
+                  text: Model.aliasLooksUndefined(root.editing, service.resolved[root.editing.id])
+                    ? "\"" + root.editing.alias + "\" is not defined in ~/.ssh/config, so ssh will treat it as a hostname and fail to resolve it. Clear the alias to use " + (root.editing.host || "the hostname") + " instead."
+                    : "Leave it only if that alias is really what you want to connect through."
+                  color: root.urgent
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  wrapMode: Text.WordWrap
+                }
+
+                Button {
+                  width: implicitWidth
+                  height: Style.spacing.controlHeight
+                  text: "Clear the alias, use " + (root.editing.host || "the hostname")
+                  foreground: root.foreground
+                  onClicked: {
+                    var next = Model.normalizeHost(root.editing)
+                    next.alias = ""
+                    root.editing = next
+                  }
+                }
+              }
             }
 
             EditorField {
@@ -448,8 +520,8 @@ Panel {
 
             EditorField {
               width: parent.width
-              label: "SSH alias"
-              placeholder: "A Host alias from ~/.ssh/config"
+              label: "SSH alias — optional, only if ~/.ssh/config defines it"
+              placeholder: "Leave empty unless you have a Host alias"
               value: root.editing.alias
               textColor: root.foreground
               onEdited: function(value) {
@@ -760,7 +832,12 @@ Panel {
           anchors.topMargin: Style.space(1)
           visible: text !== ""
           textFormat: Text.PlainText
-          text: hostRow.aliasMissing ? "alias not in ~/.ssh/config — use the hostname instead" : hostRow.subtitleText
+          // When both fields are set and the alias resolves to nothing, the
+          // user is one click from a connection that cannot work. Name the
+          // fix rather than leaving them to work out which field won.
+          text: hostRow.aliasMissing
+            ? "\"" + hostRow.host.alias + "\" is not in ~/.ssh/config — connecting would fail. Edit to clear it."
+            : hostRow.subtitleText
           color: hostRow.aliasMissing ? root.urgent : root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption

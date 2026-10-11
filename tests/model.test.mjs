@@ -22,10 +22,10 @@ const source = readFileSync(join(here, "..", "Model.js"), "utf8")
 const body = source.replace(/^\.pragma library\s*/, "")
 const exported = [
   "MODES", "emptyHost", "trim", "normalizeHost", "displayName", "destinationArgs",
-  "isConnectable", "validateHost", "parseHosts", "serializeHosts", "sortHosts",
-  "fuzzyScore", "hostScore", "filterHosts", "parseSshConfig", "parseSshConfigHosts",
-  "sessionDestination", "parseSessions", "liveSessionMap", "subtitle",
-  "aliasLooksUndefined", "identityLabel"
+  "connectCommand", "shellQuote", "isConnectable", "validateHost", "parseHosts",
+  "serializeHosts", "sortHosts", "fuzzyScore", "hostScore", "filterHosts",
+  "parseSshConfig", "parseSshConfigHosts", "sessionDestination", "parseSessions",
+  "liveSessionMap", "subtitle", "aliasLooksUndefined", "identityLabel"
 ]
 const factory = new Function(
   `${body}\nreturn { ${exported.join(", ")} };`
@@ -251,6 +251,28 @@ eq("subtitle shows jump",
 
 eq("identity label is basename only",
    Model.identityLabel("/home/someone/.ssh/id_ed25519"), "id_ed25519")
+
+// ------------------------------------------------------- the shown command
+
+// The editor prints connectCommand above the form so an alias silently
+// overriding a hostname is visible before the user connects. These pin the
+// exact text, because that text is the user's only clue to which field ssh
+// will actually use.
+
+eq("shown command with hostname", Model.connectCommand({ host: "47.122.111.22" }, "shell"),
+   "ssh '47.122.111.22'")
+eq("shown command with user", Model.connectCommand({ host: "h", user: "root" }, "shell"),
+   "ssh 'root@h'")
+eq("shown command prefers alias over host",
+   Model.connectCommand({ alias: "aliyun-halfyear", host: "47.122.111.22" }, "shell"),
+   "ssh 'aliyun-halfyear'")
+// The reconnect wrapper is shown for the user's benefit; Service.qml applies
+// the outer quoting when it builds the real script.
+eq("shown command in reconnect mode",
+   Model.connectCommand({ host: "h" }, "shell-reconnect"), "bash -ic 'ssh 'h''")
+eq("shown command empty when nothing to connect to",
+   Model.connectCommand({ host: "", alias: "" }, "shell"), "")
+eq("shellQuote escapes an embedded quote", Model.shellQuote("a'b"), "'a'\\''b'")
 
 print("")
 print(failures === 0
