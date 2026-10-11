@@ -92,6 +92,41 @@ function shellQuote(value) {
   return "'" + String(value === undefined || value === null ? "" : value).replace(/'/g, "'\\''") + "'"
 }
 
+// The script handed to `bash -c` in the terminal.
+//
+// `run` is the ssh invocation, already quoted. On success the terminal closes
+// exactly as it would for a plain ssh. On failure it stays open, because ssh
+// exits in well under a second for a refused key, a bad password, or an
+// unreachable host — and a terminal that closes on exit takes the only
+// explanation with it. The user gets the ssh message on screen plus a desktop
+// notification, and presses a key to dismiss.
+//
+// Exit 130 is ssh reporting a Ctrl-C, which is a deliberate disconnect rather
+// than a failure, so it closes quietly instead of parking a window.
+//
+// The name is passed as an argument to the wrapper rather than interpolated,
+// so it cannot alter the script.
+function connectScript(run, label) {
+  const quotedLabel = shellQuote(label + " — ssh failed")
+  return [
+    // A subshell so the status is captured without letting a `RemoteCommand`
+    // or a wrapper `exit` tear down the terminal before the check runs.
+    "sshdrops_run() { (" + run + "); }",
+    "sshdrops_run",
+    "sshdrops_rc=$?",
+    // 130 is ssh reporting a deliberate Ctrl-C, not a failure.
+    'if [ "$sshdrops_rc" -ne 0 ] && [ "$sshdrops_rc" -ne 130 ]; then',
+    "printf '\\n\\033[1;31mssh failed (exit %s)\\033[0m\\n' \"$sshdrops_rc\"",
+    "omarchy-notification-send -g '' -u critical " + quotedLabel +
+      " \"SSH exited with status $sshdrops_rc\" >/dev/null 2>&1 || true",
+    "printf '\\nPress Enter to close. '",
+    "read -r _",
+    "fi",
+    'exit "$sshdrops_rc"',
+    ""
+  ].join("\n")
+}
+
 // A host is connectable when ssh would have something to dial.
 function isConnectable(host) {
   if (!host) return false
@@ -426,6 +461,45 @@ function aliasLooksUndefined(host, resolved) {
   if (!host || !host.alias || !resolved) return false
   if (!resolved.ok) return true
   return resolved.hostname === host.alias
+}
+
+// --------------------------------------------------------- key authentication
+
+// Key authentication state for a host, derived from a batch-mode probe.
+//
+// Three outcomes matter, and they call for different actions:
+//
+//   "keyed"    - a publickey already authenticates. Nothing to do.
+//   "password" - the host answered and rejected us, which means it wanted a
+//                password. The fix is to deploy a key, not to store one.
+//   "unknown"  - the probe could not conclude anything. Nothing is claimed.
+//
+// ssh exits 255 for a refused key, an unresolvable name, and an unreachable
+// host alike, so the message is the only thing that separates them. Only
+// "Permission denied" proves the host was reached and turned us away.
+function keyState(probeOk, probeMessage) {
+  if (probeOk === true) return "keyed"
+  var message = String(probeMessage || "").toLowerCase()
+  if (message.indexOf("permission denied") !== -1) return "password"
+  if (message.indexOf("could not resolve") !== -1) return "unresolved"
+  if (message.indexOf("host key verification failed") !== -1) return "unknown"
+  if (message.indexOf("connection refused") !== -1) return "refused"
+  if (message.indexOf("connection timed out") !== -1) return "unreachable"
+  if (message.indexOf("no route to host") !== -1) return "unreachable"
+  if (message.indexOf("network is unreachable") !== -1) return "unreachable"
+  if (message.indexOf("connection reset") !== -1) return "refused"
+  return "unknown"
+}
+
+// The one-line explanation shown on a row or in the editor. Only `password`
+// has a remedy worth offering; the rest are reported plainly.
+function keyStateHint(state) {
+  if (state === "keyed") return "Key authentication is already set up"
+  if (state === "password") return "Needs a password — deploy your key to connect without one"
+  if (state === "unresolved") return "Host name does not resolve"
+  if (state === "refused") return "Host refused the connection"
+  if (state === "unreachable") return "Host did not answer"
+  return ""
 }
 
 // ------------------------------------------------------------------ formatting

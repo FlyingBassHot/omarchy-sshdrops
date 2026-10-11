@@ -293,10 +293,14 @@ Item {
   //
   // `bash -c` then runs the command with a real PATH and a controlling tty, so
   // the password prompt, the host-key prompt, and a full-screen remote program
-  // (vim, htop, tmux) all behave. Passwords are never collected, stored, or
-  // passed by this plugin — ssh prompts for them in the new terminal, exactly
-  // as it does on the command line, and key-based auth keeps working because
-  // ssh still reads the user's own ssh config and agent.
+  // (vim, htop, tmux) all behave.
+  //
+  // The wrapper keeps the window open when ssh fails. A wrong password, a
+  // refused key, or an unreachable host exits ssh in under a second, and a
+  // terminal that closes on exit takes the reason with it — all the user sees
+  // is a flash. The exit status is checked and the window is held on a
+  // keypress so the message stays readable, and a desktop notification is sent
+  // so the reason is available even after the window is dismissed.
   //
   // The host name is single-quote escaped with Util.shellQuote, so a name that
   // contains shell metacharacters lands as one literal argument.
@@ -319,11 +323,14 @@ Item {
     }
 
     var mode = root.modeFor(host)
-    // Model.connectCommand is the same helper the editor renders above the
-    // form, so the command the user reads is the one that runs.
-    var script = mode === "shell-reconnect"
-      ? "bash -ic " + Util.shellQuote("ssh " + destination.map(Util.shellQuote).join(" "))
-      : "ssh " + destination.map(Util.shellQuote).join(" ")
+    var label = Model.displayName(host)
+    var inner = "ssh " + destination.map(Util.shellQuote).join(" ")
+
+    // The reconnect wrapper is itself a shell command, so the failure handling
+    // wraps whichever form is being run rather than duplicating it.
+    var run = mode === "shell-reconnect" ? "bash -ic " + Util.shellQuote(inner) : inner
+
+    var script = Model.connectScript(run, label)
 
     Util.execArgv([
       "setsid", "uwsm-app", "--",
@@ -335,7 +342,140 @@ Item {
     return true
   }
 
-  // ------------------------------------------------------------------- import
+  // ------------------------------------------------------ key authentication
+
+  // Key state per host id, filled by a batch-mode probe. BatchMode is what
+  // makes this a probe rather than a connection attempt: ssh will not prompt,
+  // so it either authenticates with a key or fails immediately without ever
+  // asking for a password. Nothing here can block on a human.
+  property var keyStates: ({})
+  property var probingId: ""
+  property var probeQueue: []
+
+  readonly property bool hasLocalKey: keyFileListed
+
+  property bool keyFileListed: false
+  property string keyProbeTimeoutSec: intSetting("keyProbeTimeoutSec", 5, 2, 15)
+
+  // Ask ssh whether a key already works. Runs one host at a time behind a
+  // queue so a library of hosts does not open a burst of connections, and
+  // StrictHostKeyChecking=accept-new means an unknown host is recorded rather
+  // than blocking on a prompt this process could never answer.
+  function probeKeys() {
+    probeQueue = []
+    probingId = ""
+    for (var i = 0; i < root.hosts.length; i++) probeQueue.push(root.hosts[i].id)
+    pumpProbeQueue()
+  }
+
+  function pumpProbeQueue() {
+    if (probeProcess.running || root.probeQueue.length === 0) return
+    var id = root.probeQueue.shift()
+    var host = hostById(id)
+    if (!host) {
+      Qt.callLater(root.pumpProbeQueue)
+      return
+    }
+    var destination = Model.destinationArgs(host)
+    if (destination.length === 0) {
+      Qt.callLater(root.pumpProbeQueue)
+      return
+    }
+    probingId = id
+    probeProcess.command = [
+      "ssh", "-o", "BatchMode=yes",
+      "-o", "ConnectTimeout=" + root.keyProbeTimeoutSec,
+      "-o", "StrictHostKeyChecking=accept-new"
+    ].concat(destination).concat(["exit"])
+    probeProcess.running = true
+  }
+
+  Process {
+    id: probeProcess
+    running: false
+
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.probeOutput = text
+    }
+
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.probeError = text
+    }
+
+    onExited: function(exitCode) {
+      var id = root.probingId
+      if (id !== "") {
+        var message = String(root.probeError || "") + "\n" + String(root.probeOutput || "")
+        var next = {}
+        for (var key in root.keyStates) next[key] = root.keyStates[key]
+        next[id] = Model.keyState(exitCode === 0, message)
+        root.keyStates = next
+      }
+      root.probingId = ""
+      root.probeOutput = ""
+      root.probeError = ""
+      Qt.callLater(root.pumpProbeQueue)
+    }
+  }
+
+  property string probeOutput: ""
+  property string probeError: ""
+
+  function keyStateFor(host) {
+    if (!host) return "unknown"
+    var state = root.keyStates[host.id]
+    return state ? state : "unknown"
+  }
+
+  // Deploy this machine's public key to a host.
+  //
+  // `ssh-copy-id` asks for the password in the terminal the user already has
+  // open and never receives it from the plugin, so no password is stored,
+  // passed through argv, or held in this process. After it runs once the host
+  // authenticates by key and the panel connects with no prompt at all.
+  //
+  // This is the same one-time setup as running ssh-copy-id by hand; it is in
+  // the panel because it is the step that makes "click and you are there"
+  // true, and because forgetting it is the reason a click still asks for a
+  // password.
+  function deployKey(host) {
+    if (!Model.isConnectable(host)) return false
+    var destination = Model.destinationArgs(host)
+    if (destination.length === 0) return false
+
+    var label = Model.displayName(host)
+    // copy-id appends to authorized_keys on the far side and is idempotent,
+    // so running it twice is safe.
+    var script = [
+      "sshdrops_copy() { ssh-copy-id -o StrictHostKeyChecking=accept-new " +
+        destination.map(Util.shellQuote).join(" ") + "; }",
+      "sshdrops_copy",
+      "sshdrops_rc=$?",
+      'if [ "$sshdrops_rc" -ne 0 ]; then',
+      "printf '\\n\\033[1;31mkey deploy failed (exit %s)\\033[0m\\n' \"$sshdrops_rc\"",
+      "printf '\\nPress Enter to close. '",
+      "read -r _",
+      "else",
+      "printf '\\n\\033[1;32mkey deployed — this host will connect without a password\\033[0m\\n'",
+      "printf '\\nPress Enter to close. '",
+      "read -r _",
+      "fi",
+      'exit "$sshdrops_rc"'
+    ].join("\n")
+
+    Util.execArgv([
+      "setsid", "uwsm-app", "--",
+      "xdg-terminal-exec",
+      "--app-id=org.omarchy.sshdrops",
+      "--title=SSHDrops — deploy key",
+      "-e", "bash", "-c", script
+    ])
+    return true
+  }
+
+  // ------------------------------------------------------------------ import
 
   property var importCandidates: []
   property bool importing: false

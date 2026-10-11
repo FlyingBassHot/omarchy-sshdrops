@@ -25,7 +25,8 @@ const exported = [
   "connectCommand", "shellQuote", "isConnectable", "validateHost", "parseHosts",
   "serializeHosts", "sortHosts", "fuzzyScore", "hostScore", "filterHosts",
   "parseSshConfig", "parseSshConfigHosts", "sessionDestination", "parseSessions",
-  "liveSessionMap", "subtitle", "aliasLooksUndefined", "identityLabel"
+  "liveSessionMap", "subtitle", "aliasLooksUndefined", "connectScript",
+  "keyState", "keyStateHint", "identityLabel"
 ]
 const factory = new Function(
   `${body}\nreturn { ${exported.join(", ")} };`
@@ -273,6 +274,30 @@ eq("shown command in reconnect mode",
 eq("shown command empty when nothing to connect to",
    Model.connectCommand({ host: "", alias: "" }, "shell"), "")
 eq("shellQuote escapes an embedded quote", Model.shellQuote("a'b"), "'a'\\''b'")
+
+// ---------------------------------------------------------- key detection
+
+// ssh exits 255 for a refused key and for an unreachable host alike, so the
+// message is the only thing that separates "needs a password" — which has a
+// fix worth offering — from "cannot reach it", which does not.
+eq("batch success is keyed", Model.keyState(true, ""), "keyed")
+eq("permission denied needs a password",
+   Model.keyState(false, "root@1.2.3.4: Permission denied (publickey,password)."), "password")
+eq("permission denied mid-stream",
+   Model.keyState(false, "Warning: Permanently added\nroot@1.2.3.4: Permission denied"), "password")
+eq("unresolvable name", Model.keyState(false, "ssh: Could not resolve hostname foo: Temporary failure"), "unresolved")
+eq("refused", Model.keyState(false, "ssh: connect to host 1.2.3.4 port 22: Connection refused"), "refused")
+eq("timed out", Model.keyState(false, "ssh: connect to host 1.2.3.4 port 22: Connection timed out"), "unreachable")
+eq("no route", Model.keyState(false, "ssh: connect to host 1.2.3.4 port 22: No route to host"), "unreachable")
+eq("unknown host key", Model.keyState(false, "Host key verification failed."), "unknown")
+eq("nothing recognizable", Model.keyState(false, "something else entirely"), "unknown")
+eq("no message at all", Model.keyState(false, ""), "unknown")
+
+eq("keyed hint", Model.keyStateHint("keyed"), "Key authentication is already set up")
+eq("password hint names the fix",
+   Model.keyStateHint("password"), "Needs a password — deploy your key to connect without one")
+eq("unknown hint is empty", Model.keyStateHint("unknown"), "")
+eq("unreachable hint is plain", Model.keyStateHint("unreachable"), "Host did not answer")
 
 print("")
 print(failures === 0

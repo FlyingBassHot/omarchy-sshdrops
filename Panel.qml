@@ -39,6 +39,16 @@ Panel {
     : null
   readonly property bool editorBlocked: view === "editor" || deleteTargetId !== "" || importOpen
 
+  // Key state for the host being edited. An unsaved new host has no probe yet,
+  // so the section stays quiet until one is saved.
+  readonly property string editorKeyState: editing.id === "" ? "" : (service.keyStates[editing.id] || "")
+  readonly property bool editorNeedsKey: editorKeyState === "password"
+  readonly property string editorKeyHint: {
+    if (editorKeyState === "") return "Save this host to check whether it accepts your key."
+    var hint = Model.keyStateHint(editorKeyState)
+    return hint === "" ? "" : hint + "."
+  }
+
   function clampCursor() {
     if (results.length === 0) {
       cursorIndex = 0
@@ -99,9 +109,12 @@ Panel {
 
   onOpenedChanged: if (opened) {
     // Sessions go stale while the panel is closed, and so does the resolved
-    // config when the user edits ~/.ssh/config in another window.
+    // config when the user edits ~/.ssh/config in another window. The key
+    // check opens a real connection per host, so it only runs when the panel
+    // is actually being looked at rather than on the poll timer.
     service.refreshSessions()
     service.resolveAll()
+    service.probeKeys()
     clampCursor()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
@@ -128,6 +141,9 @@ Panel {
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
     function refresh(): string { service.refreshSessions(); return "ok" }
+    function checkKeys(): string { service.probeKeys(); return "ok" }
+    function keyStates(): string { return JSON.stringify(service.keyStates) }
+    function deployKey(id: string): string { return JSON.stringify(service.deployKey(service.hostById(id))) }
     function hosts(): string { return JSON.stringify(service.hosts) }
     function sessions(): string { return JSON.stringify(service.sessions) }
   }
@@ -215,6 +231,8 @@ Panel {
           service.importFromSshConfig()
           root.importOpen = true
         }
+        else if (key === "k" && root.selected && (service.keyStates[root.selected.id] || "") === "password")
+          service.deployKey(root.selected)
       }
 
       Flickable {
@@ -316,6 +334,7 @@ Panel {
                   live: modelData.live
                   sessionCount: modelData.sessionCount
                   resolvedInfo: service.resolved[modelData.host.id] || null
+                  keyState: service.keyStates[modelData.host.id] || ""
                   selected: root.cursorIndex === index
                   rowColor: root.foreground
                   onActivated: {
@@ -330,6 +349,11 @@ Panel {
                     root.cursorIndex = index
                     root.requestDelete(modelData.host)
                   }
+                  onDeployKeyRequested: {
+                    root.cursorIndex = index
+                    service.deployKey(modelData.host)
+                    root.close()
+                  }
                 }
               }
             }
@@ -339,6 +363,7 @@ Panel {
               width: parent.width
               text: "↑↓ move · Enter connect · E edit · A add · X delete · R refresh"
                 + (service.importEnabled ? " · I import" : "")
+                + " · K deploy key"
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -501,6 +526,49 @@ Panel {
                     next.alias = ""
                     root.editing = next
                   }
+                }
+              }
+            }
+
+            // Key authentication is the answer to "stop asking me for a
+            // password", and the fix is one click rather than a stored
+            // secret. The password itself is typed by the user into
+            // ssh-copy-id's prompt in a real terminal and never passes
+            // through this plugin.
+            Rectangle {
+              visible: root.editing.aliasMissing === false && Model.isConnectable(root.editing)
+              width: parent.width
+              height: keyBody.implicitHeight + Style.space(16)
+              radius: Style.cornerRadius
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07)
+              border.width: 1
+              border.color: root.dim
+
+              Column {
+                id: keyBody
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.margins: Style.space(8)
+                spacing: Style.space(6)
+
+                Text {
+                  width: parent.width
+                  text: root.editorKeyHint
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  wrapMode: Text.WordWrap
+                }
+
+                Button {
+                  width: implicitWidth
+                  height: Style.spacing.controlHeight
+                  visible: root.editorNeedsKey
+                  text: "Deploy my SSH key"
+                  tooltipText: "Runs ssh-copy-id. You type the password once, in a terminal. Nothing is stored."
+                  foreground: root.foreground
+                  onClicked: { service.deployKey(root.editing); root.close() }
                 }
               }
             }
@@ -710,11 +778,13 @@ Panel {
     signal activated()
     signal editRequested()
     signal deleteRequested()
+    signal deployKeyRequested()
 
     required property var host
     property bool live: false
     property int sessionCount: 0
     property var resolvedInfo: null
+    property string keyState: ""
     property bool selected: false
     property color rowColor: Color.foreground
 
@@ -724,6 +794,7 @@ Panel {
     // exits instantly with "Could not resolve hostname", which reads as the
     // plugin being broken. Say so on the row instead.
     readonly property bool aliasMissing: Model.aliasLooksUndefined(host, resolvedInfo)
+    readonly property bool needsKey: keyState === "password" && !aliasMissing
 
     hasCursor: selected
     current: selected
@@ -843,6 +914,15 @@ Panel {
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
         }
+      }
+
+      PanelActionButton {
+        Layout.alignment: Qt.AlignVCenter
+        visible: hostRow.needsKey
+        iconText: "󰌆"
+        tooltipText: "Deploy your SSH key so this host connects without a password"
+        foreground: hostRow.rowColor
+        onClicked: hostRow.deployKeyRequested()
       }
 
       PanelActionButton {

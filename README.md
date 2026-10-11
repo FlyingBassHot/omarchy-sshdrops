@@ -39,6 +39,7 @@ Click the bar icon (or press your shortcut, see below) to open the panel.
 | `E`            | Edit the selected host                     |
 | `X`            | Remove the selected host (asks first)      |
 | `R`            | Rescan for live sessions                   |
+| `K`            | Deploy your SSH key to the selected host   |
 | `I`            | Import `Host` aliases from `~/.ssh/config` |
 | `Esc`          | Close the panel, or step back out of a form |
 
@@ -81,12 +82,51 @@ so its own prompts work:
   `IdentityFile`, and `IdentitiesOnly` keep working without configuring
   anything here.
 - **First connection to a new host** — ssh asks you to confirm the host key.
-  Answering needs a real terminal, which is why the plugin launches one instead
-  of trying to do it inline.
+
+### "Click and you are there"
+
+Repeatedly typing a password defeats the point of a one-click launcher, but
+**storing the password in the plugin is the wrong fix**. A plugin runs
+unsandboxed inside `omarchy-shell` for the whole session: a stored password
+would sit in that process's memory, and the usual ways of scripting a password
+into ssh (`sshpass`, `expect`) expose it in the process list, where any other
+user on the machine can read it.
+
+The fix is a key, and it is a one-time setup per host:
+
+| Key                | Effect                                                     |
+| ------------------ | ---------------------------------------------------------- |
+| `K` in the panel   | Runs `ssh-copy-id` for the selected host                    |
+| Key icon on a row  | Same, for any host the panel has detected needs a password |
+
+`ssh-copy-id` asks for the password **in a terminal you can see**, exactly like
+running it by hand. The password never passes through the plugin, never
+appears in `argv`, and is never written to disk. After it runs once, the host
+authenticates by key and every later click connects with no prompt.
+
+The panel checks which hosts already accept a key with a `BatchMode=yes`
+probe, which cannot prompt, so it never blocks waiting for input. Hosts that
+answer `Permission denied` are the ones offering the deploy button; hosts that
+are simply unreachable are reported as such and offered nothing.
 
 If a saved host is an alias that `~/.ssh/config` does not define, ssh treats it
-as a hostname, DNS fails, and the terminal closes instantly. The row says
-**"alias not in ~/.ssh/config"** in red before you get that far.
+as a hostname, DNS fails, and the terminal closes instantly. The row says so
+in red before you get that far.
+
+## When a connection fails
+
+ssh exits in well under a second for a refused key, a bad password, or an
+unreachable host. A terminal that closes on exit takes the only explanation
+with it, so the wrapper keeps the window open, prints the exit status, and
+sends a desktop notification:
+
+```
+ssh failed (exit 255)
+
+Press Enter to close.
+```
+
+`Ctrl-C` (exit 130) is a deliberate disconnect and closes quietly.
 
 ## Connect modes
 
@@ -120,6 +160,7 @@ omarchy bar set io.github.flyingbasshot.sshdrops connectMode shell-reconnect
 omarchy bar set io.github.flyingbasshot.sshdrops showLabel false
 omarchy bar set io.github.flyingbasshot.sshdrops sessionPollSec 30
 omarchy bar set io.github.flyingbasshot.sshdrops importTildeSshConfig false
+omarchy bar set io.github.flyingbasshot.sshdrops keyProbeTimeoutSec 8
 ```
 
 | Key                   | Default | Meaning                                   |
@@ -127,6 +168,7 @@ omarchy bar set io.github.flyingbasshot.sshdrops importTildeSshConfig false
 | `connectMode`         | `shell` | Default connect mode for new hosts        |
 | `showLabel`           | `true`  | Show the host count in the bar            |
 | `sessionPollSec`      | `15`    | How often to rescan for live sessions     |
+| `keyProbeTimeoutSec`  | `5`     | How long to wait when checking for a key  |
 | `importTildeSshConfig`| `true`  | Offer the `~/.ssh/config` import button   |
 
 ## Keyboard shortcut
@@ -146,6 +188,9 @@ The panel is addressable over the shell's IPC:
 ```bash
 omarchy-shell io.github.flyingbasshot.sshdrops toggle '{}'   # open/close
 omarchy-shell io.github.flyingbasshot.sshdrops refresh       # rescan sessions
+omarchy-shell io.github.flyingbasshot.sshdrops checkKeys     # re-probe key auth
+omarchy-shell io.github.flyingbasshot.sshdrops keyStates    # key state as JSON
+omarchy-shell io.github.flyingbasshot.sshdrops deployKey <id>  # open ssh-copy-id
 omarchy-shell io.github.flyingbasshot.sshdrops hosts         # library as JSON
 omarchy-shell io.github.flyingbasshot.sshdrops sessions      # live sessions as JSON
 ```
@@ -175,12 +220,18 @@ probed, scanned, or uploaded, and no host is ever contacted except by pressing
 ```bash
 node tests/model.test.mjs
 node tests/connect-argv.test.mjs
+node tests/connect-script.test.mjs
 ```
 
-Both run against `Model.js` directly — the same file the panel imports. The
-second one hands the generated connect command to a real `bash` to confirm a
-host name containing `; rm -rf ~`, `$(id)`, a single quote, or a glob arrives as
-one literal argument rather than being interpreted.
+All three load `Model.js` directly — the same file the panel imports.
+
+- `connect-argv.test.mjs` hands the generated connect command to a real `bash`
+  and checks that a host name containing `; rm -rf ~`, `$(id)`, a single
+  quote, or a glob arrives as one literal argument rather than being
+  interpreted.
+- `connect-script.test.mjs` runs the failure wrapper to confirm it holds the
+  window open on a non-zero exit, closes quietly on success and on `Ctrl-C`,
+  and stays inert when the host name contains shell metacharacters.
 
 See [DEVELOPING.md](DEVELOPING.md) for the edit-and-reload loop and the shell
 log commands.

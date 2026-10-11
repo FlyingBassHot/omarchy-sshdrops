@@ -24,8 +24,9 @@ Run these before every commit. They load `Model.js` directly — the same file
 copy.
 
 ```bash
-node tests/model.test.mjs      # pure logic: parsing, ranking, formatting
+node tests/model.test.mjs         # pure logic: parsing, ranking, formatting
 node tests/connect-argv.test.mjs  # the argv handed to ssh
+node tests/connect-script.test.mjs  # the failure wrapper, run under a real bash
 ```
 
 `connect-argv.test.mjs` is the one that matters most. The reconnect path
