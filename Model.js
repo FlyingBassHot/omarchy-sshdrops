@@ -394,6 +394,20 @@ function liveSessionMap(hosts, counts) {
   return map
 }
 
+// True when a host's ssh alias is not actually defined in the user's ssh
+// config.
+//
+// `ssh -G` falls back to treating an unknown alias as a literal hostname, so
+// the tell is that the resolved `hostname` came back unchanged. A real alias
+// resolves to an address (or at least something else), and `Could not resolve
+// hostname` is what the user would otherwise see as a window that opens and
+// closes instantly with no explanation.
+function aliasLooksUndefined(host, resolved) {
+  if (!host || !host.alias || !resolved) return false
+  if (!resolved.ok) return true
+  return resolved.hostname === host.alias
+}
+
 // ------------------------------------------------------------------ formatting
 
 // The second line under a host: the destination as ssh would read it, plus the

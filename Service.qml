@@ -282,14 +282,24 @@ Item {
 
   // Open a terminal running ssh to this host.
   //
-  // `shell-reconnect` routes through `bash -ic` because Omarchy's reconnecting
-  // `ssh()` is a bash function, defined in the interactive rc chain and
-  // invisible to a plain exec. The interactive flag is what pulls that rc in;
-  // the wrapper then cleans up terminal modes and retries a dropped session.
+  // The launch goes through `xdg-terminal-exec ... -e bash -c '<script>'`
+  // rather than passing the command as bare argv. That is the form Omarchy's
+  // own terminal launchers use (see omarchy-launch-floating-terminal-with-
+  // presentation), and it is required: `xdg-terminal-exec` only treats its
+  // trailing arguments as a command when `-e` is present. Without `-e` the
+  // terminal takes them as filenames to open, so ssh never runs and the new
+  // window comes up empty — or, worse, reuses a tty that an existing terminal
+  // is still drawing on and scrambles that window's display.
   //
-  // Both modes build an argv array. `bash -ic` takes the ssh command as a
-  // single string, so it is quoted here with the same single-quote escaping
-  // Util.shellQuote uses — the host name lands as one literal word.
+  // `bash -c` then runs the command with a real PATH and a controlling tty, so
+  // the password prompt, the host-key prompt, and a full-screen remote program
+  // (vim, htop, tmux) all behave. Passwords are never collected, stored, or
+  // passed by this plugin — ssh prompts for them in the new terminal, exactly
+  // as it does on the command line, and key-based auth keeps working because
+  // ssh still reads the user's own ssh config and agent.
+  //
+  // The host name is single-quote escaped with Util.shellQuote, so a name that
+  // contains shell metacharacters lands as one literal argument.
   function connect(host) {
     if (!Model.isConnectable(host)) {
       root.lastError = "That host has no hostname or alias"
@@ -297,19 +307,33 @@ Item {
     }
 
     var destination = Model.destinationArgs(host)
-    var mode = root.modeFor(host)
-    var argv = ["omarchy-launch-terminal"]
-
-    if (mode === "shell-reconnect") {
-      var command = "ssh " + destination.map(Util.shellQuote).join(" ")
-      // -i so the rc chain runs and defines the wrapper; -c so the terminal
-      // runs the command instead of dropping into an interactive prompt.
-      argv = argv.concat(["bash", "-ic", command])
-    } else {
-      argv = argv.concat(["ssh"]).concat(destination)
+    if (destination.length === 0) {
+      root.lastError = "That host has no hostname or alias"
+      return false
     }
 
-    Util.execArgv(argv)
+    var quoted = destination.map(Util.shellQuote).join(" ")
+    var mode = root.modeFor(host)
+    var script
+
+    if (mode === "shell-reconnect") {
+      // Omarchy's reconnecting `ssh()` is a bash function defined in the
+      // interactive rc chain, invisible to a plain exec. `-i` is what pulls
+      // that rc in; `-c` keeps the terminal from dropping into a prompt
+      // instead of running the command. The wrapper then disarms the terminal
+      // modes a dropped session leaves armed and retries the connection.
+      script = "bash -ic " + Util.shellQuote("ssh " + quoted)
+    } else {
+      script = "ssh " + quoted
+    }
+
+    Util.execArgv([
+      "setsid", "uwsm-app", "--",
+      "xdg-terminal-exec",
+      "--app-id=org.omarchy.sshdrops",
+      "--title=SSHDrops",
+      "-e", "bash", "-c", script
+    ])
     return true
   }
 

@@ -24,11 +24,17 @@ const shellQuote = v => "'" + String(v ?? "").replace(/'/g, "'\\''") + "'"
 // The same construction as Service.connect.
 function buildArgv(host, mode) {
   const destination = Model.destinationArgs(host)
-  if (mode === "shell-reconnect") {
-    const command = "ssh " + destination.map(shellQuote).join(" ")
-    return ["omarchy-launch-terminal", "bash", "-ic", command]
-  }
-  return ["omarchy-launch-terminal", "ssh"].concat(destination)
+  const quoted = destination.map(shellQuote).join(" ")
+  const script = mode === "shell-reconnect"
+    ? "bash -ic " + shellQuote("ssh " + quoted)
+    : "ssh " + quoted
+  return [
+    "setsid", "uwsm-app", "--",
+    "xdg-terminal-exec",
+    "--app-id=org.omarchy.sshdrops",
+    "--title=SSHDrops",
+    "-e", "bash", "-c", script
+  ]
 }
 
 let failures = 0
@@ -44,67 +50,79 @@ function eq(name, actual, expected) {
 
 // ----------------------------------------------------------- ordinary hosts
 
-eq("plain alias",
-   buildArgv({ alias: "bastion" }, "shell"),
-   ["omarchy-launch-terminal", "ssh", "bastion"])
+const plain = buildArgv({ alias: "bastion" }, "shell")
+eq("launcher prefix is stable",
+   plain.slice(0, 3), ["setsid", "uwsm-app", "--"])
+// Without this `-e`, xdg-terminal-exec hands the trailing arguments to the
+// terminal as filenames instead of a command: no ssh, an empty window, or a
+// reused tty that scrambles an existing terminal's display.
+eq("-e is present", plain.includes("-e"), true)
+eq("command runs under bash -c", plain.slice(-3, -1), ["bash", "-c"])
+eq("plain alias", plain[plain.length - 1], "ssh 'bastion'")
 
 eq("user@host",
-   buildArgv({ alias: "", user: "deploy", host: "gw.lan" }, "shell"),
-   ["omarchy-launch-terminal", "ssh", "deploy@gw.lan"])
+   buildArgv({ alias: "", user: "deploy", host: "gw.lan" }, "shell").pop(),
+   "ssh 'deploy@gw.lan'")
 
 eq("reconnect alias",
-   buildArgv({ alias: "bastion" }, "shell-reconnect"),
-   ["omarchy-launch-terminal", "bash", "-ic", "ssh 'bastion'"])
+   buildArgv({ alias: "bastion" }, "shell-reconnect").pop(),
+   "bash -ic 'ssh '\\''bastion'\\'''")
 
 eq("reconnect user@host",
-   buildArgv({ alias: "", user: "deploy", host: "gw.lan" }, "shell-reconnect"),
-   ["omarchy-launch-terminal", "bash", "-ic", "ssh 'deploy@gw.lan'"])
+   buildArgv({ alias: "", user: "deploy", host: "gw.lan" }, "shell-reconnect").pop(),
+   "bash -ic 'ssh '\\''deploy@gw.lan'\\'''")
 
 // ------------------------------------------------------------ hostile hosts
 //
 // These are the cases that matter: a host name is user input on its way to a
-// shell, and the reconnect path is the only place it is embedded in a command
-// string rather than passed as an argv element.
+// shell, and the script handed to `bash -c` is the one place it is embedded
+// in a string rather than passed as an argv element.
 
-const semicolon = buildArgv({ host: "; rm -rf ~" }, "shell")
-eq("plain mode keeps metacharacters inert as argv",
-   semicolon, ["omarchy-launch-terminal", "ssh", "; rm -rf ~"])
+eq("plain mode quotes the semicolon",
+   buildArgv({ host: "; rm -rf ~" }, "shell").pop(), "ssh '; rm -rf ~'")
 
-const semiRc = buildArgv({ host: "; rm -rf ~" }, "shell-reconnect")
-eq("reconnect mode quotes the semicolon", semiRc[3], "ssh '; rm -rf ~'")
+eq("plain mode escapes a single quote",
+   buildArgv({ host: "a'b" }, "shell").pop(), "ssh 'a'\\''b'")
 
-const quoteRc = buildArgv({ host: "a'b" }, "shell-reconnect")
-eq("reconnect mode escapes a single quote", quoteRc[3], "ssh 'a'\\''b'")
+eq("plain mode quotes command substitution",
+   buildArgv({ host: "$(id)" }, "shell").pop(), "ssh '$(id)'")
 
-const substRc = buildArgv({ host: "$(id)" }, "shell-reconnect")
-eq("reconnect mode quotes command substitution", substRc[3], "ssh '$(id)'")
+eq("plain mode quotes backticks",
+   buildArgv({ host: "`id`" }, "shell").pop(), "ssh '`id`'")
 
-const backtickRc = buildArgv({ host: "`id`" }, "shell-reconnect")
-eq("reconnect mode quotes backticks", backtickRc[3], "ssh '`id`'")
-
-const newlineRc = buildArgv({ host: "a\nrm -rf ~" }, "shell-reconnect")
-eq("reconnect mode survives a newline", newlineRc[3], "ssh 'a\nrm -rf ~'")
-
-// Every reconnect argv must keep ssh as the command and the wrapper's target
-// as a single literal word. `split(" ")` would be the wrong test — spaces
-// *inside* the quoted literal are supposed to survive — so hand the command
-// to a real bash and check what it actually resolves to.
+// Every connect must keep the launcher prefix intact and end with exactly one
+// command for bash to run.
 for (const [label, host] of [
   ["semicolon", "; rm -rf ~"],
   ["quote", "a'b"],
   ["dollar", "$(id)"],
   ["space", "two words"],
-  ["glob", "*"]
+  ["glob", "*"],
+  ["newline", "a\nrm -rf ~"]
 ]) {
-  const argv = buildArgv({ host }, "shell-reconnect")
-  eq(`reconnect argv shape (${label})`, argv.slice(0, 3),
-     ["omarchy-launch-terminal", "bash", "-ic"])
+  for (const mode of ["shell", "shell-reconnect"]) {
+    const argv = buildArgv({ host }, mode)
+    eq(`launcher prefix (${label}/${mode})`, argv.slice(0, 3),
+       ["setsid", "uwsm-app", "--"])
+    eq(`-e present (${label}/${mode})`, argv.includes("-e"), true)
+    eq(`runs via bash -c (${label}/${mode})`, argv.slice(-3, -1), ["bash", "-c"])
 
-  // Echo back what bash thinks the last word is, with a sentinel so an empty
-  // or split result is unmistakable.
-  const probe = `set -- ${argv[3]}; printf '[%s]' "$2"`
-  const resolved = execFileSync("bash", ["-c", probe], { encoding: "utf8" })
-  eq(`reconnect target is one literal word (${label})`, resolved, `[${host}]`)
+    // Ask a real bash to expand the script into argv and report every word
+    // separated by a sentinel, so an embedded newline cannot split a result
+    // in half and hide a failure. For the reconnect mode the wrapper is
+    // stripped first, since the inner ssh is what must survive intact.
+    const script = argv[argv.length - 1]
+    const inner = mode === "shell-reconnect"
+      ? execFileSync("bash", ["-c", `printf '%s\\x01' ${script.replace(/^bash -ic /, "")}`], { encoding: "utf8" })
+      : script
+    const probe = `set -- ${inner}; for a in "$@"; do printf '%s\\x01' "$a"; done`
+    const words = execFileSync("bash", ["-c", probe], { encoding: "utf8" })
+      .split("\x01").filter(w => w !== "")
+
+    eq(`no shell metacharacters execute (${label}/${mode})`, words[0], "ssh")
+    eq(`target is one literal word (${label}/${mode})`, words.length, 2)
+    eq(`target survives intact (${label}/${mode})`, words[1], host)
+  }
 }
 
 console.log("")

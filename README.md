@@ -69,15 +69,47 @@ Imported entries store **only the alias**. Nothing is copied out of your ssh
 config and nothing is written back to it, so an import can never drift out of
 sync with the settings you actually connect with.
 
+## Passwords and keys
+
+SSHDrops never asks for, stores, or transmits a password. When you press
+`Enter`, ssh runs in the new terminal exactly as it would on the command line,
+so its own prompts work:
+
+- **Password auth** — ssh asks for the password in the terminal. Typing shows
+  nothing, which is normal.
+- **Key auth** — ssh reads `~/.ssh/config` and the agent as usual, so keys,
+  `IdentityFile`, and `IdentitiesOnly` keep working without configuring
+  anything here.
+- **First connection to a new host** — ssh asks you to confirm the host key.
+  Answering needs a real terminal, which is why the plugin launches one instead
+  of trying to do it inline.
+
+If a saved host is an alias that `~/.ssh/config` does not define, ssh treats it
+as a hostname, DNS fails, and the terminal closes instantly. The row says
+**"alias not in ~/.ssh/config"** in red before you get that far.
+
 ## Connect modes
 
 Set per widget in the bar settings, or per host by saving one with a mode of
 its own.
 
-- **`shell`** (default) — `omarchy-launch-terminal ssh <host>`.
-- **`shell-reconnect`** — goes through `bash -ic` so it picks up Omarchy's
+- **`shell`** (default) — runs `ssh <host>` in a new terminal.
+- **`shell-reconnect`** — runs it through `bash -ic` so it picks up Omarchy's
   `ssh()` wrapper from `default/bash/fns/ssh-reconnect`, which disarms the
   terminal modes a dropped session leaves armed and retries the connection.
+
+## How the terminal is launched
+
+```
+setsid uwsm-app -- xdg-terminal-exec --app-id=org.omarchy.sshdrops \
+  --title=SSHDrops -e bash -c 'ssh <quoted-host>'
+```
+
+The `-e` is load-bearing. Without it `xdg-terminal-exec` hands the trailing
+arguments to the terminal as filenames rather than as a command: ssh never
+runs, the new window comes up empty, and foot can end up drawing on a tty that
+an already-open terminal still owns, scrambling that window's display. This is
+the same form Omarchy's own terminal launchers use.
 
 ## Settings
 

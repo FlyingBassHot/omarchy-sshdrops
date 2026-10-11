@@ -24,7 +24,8 @@ const exported = [
   "MODES", "emptyHost", "trim", "normalizeHost", "displayName", "destinationArgs",
   "isConnectable", "validateHost", "parseHosts", "serializeHosts", "sortHosts",
   "fuzzyScore", "hostScore", "filterHosts", "parseSshConfig", "parseSshConfigHosts",
-  "sessionDestination", "parseSessions", "liveSessionMap", "subtitle", "identityLabel"
+  "sessionDestination", "parseSessions", "liveSessionMap", "subtitle",
+  "aliasLooksUndefined", "identityLabel"
 ]
 const factory = new Function(
   `${body}\nreturn { ${exported.join(", ")} };`
@@ -166,6 +167,18 @@ eq("ssh -G ok", resolved.ok, true)
 const noneResolved = Model.parseSshConfig("proxyjump none\nhostname h\n")
 eq("'none' means unset", noneResolved.proxyJump, "")
 eq("ssh -G tolerates malformed lines", Model.parseSshConfig("hostname\n").ok, false)
+
+// An alias ssh does not know comes back as its own hostname, which is the
+// signal that it is really a hostname and the user meant it as an alias.
+const unknownAlias = Model.parseSshConfig("user ferch\nhostname aliyun-halfyear\nport 22\n")
+eq("unknown alias flagged", Model.aliasLooksUndefined({ alias: "aliyun-halfyear" }, unknownAlias), true)
+
+const realAlias = Model.parseSshConfig("user root\nhostname 10.0.0.1\nport 22\n")
+eq("resolved alias not flagged", Model.aliasLooksUndefined({ alias: "bastion" }, realAlias), false)
+eq("host without alias never flagged",
+   Model.aliasLooksUndefined({ alias: "", host: "10.0.0.1" }, realAlias), false)
+eq("missing resolution is not an alias verdict",
+   Model.aliasLooksUndefined({ alias: "x" }, null), false)
 
 // ---------------------------------------------------------- ssh_config hosts
 

@@ -424,7 +424,9 @@ Panel {
 
             Text {
               width: parent.width
-              text: "With an alias set, ssh resolves everything else from your own config."
+              text: root.editing.alias !== ""
+                ? "Connecting runs: ssh " + root.editing.alias + "  —  ssh resolves it from your own config."
+                : "Connecting runs: ssh " + (root.editing.user !== "" ? root.editing.user + "@" : "") + (root.editing.host || "…")
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -646,6 +648,10 @@ Panel {
 
     readonly property string subtitleText: Model.subtitle(host, resolvedInfo)
     readonly property string sessionLabel: live ? sessionCount + "▸" : ""
+    // An alias that ssh does not resolve would otherwise open a terminal that
+    // exits instantly with "Could not resolve hostname", which reads as the
+    // plugin being broken. Say so on the row instead.
+    readonly property bool aliasMissing: Model.aliasLooksUndefined(host, resolvedInfo)
 
     hasCursor: selected
     current: selected
@@ -754,8 +760,8 @@ Panel {
           anchors.topMargin: Style.space(1)
           visible: text !== ""
           textFormat: Text.PlainText
-          text: hostRow.subtitleText
-          color: root.dim
+          text: hostRow.aliasMissing ? "alias not in ~/.ssh/config — use the hostname instead" : hostRow.subtitleText
+          color: hostRow.aliasMissing ? root.urgent : root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
