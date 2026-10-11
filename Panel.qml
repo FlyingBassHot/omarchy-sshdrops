@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Effects
 import Quickshell
 import Quickshell.Io
 import qs.Commons
@@ -773,6 +774,67 @@ Panel {
 
   // ------------------------------------------------------------------ rows
 
+  // Row actions.
+  //
+  // These draw an SVG rather than a Nerd Font glyph. A machine can have both
+  // a Nerd Font and Font Awesome installed, and their Private Use Area
+  // codepoints overlap while the glyphs differ — Qt resolves by fontconfig
+  // priority, so the same U+F01D that renders as a trash can on one system
+  // renders as a play button on another. An SVG has one rendering everywhere
+  // and tints with `color` like a Text would.
+  component RowIconButton: Item {
+    id: iconButton
+    signal clicked()
+
+    property string source: ""
+    property color iconColor: Color.foreground
+    property real iconSize: Style.font.icon
+    property bool shown: true
+    property string tooltip: ""
+
+    visible: shown
+    implicitWidth: Style.space(22)
+    implicitHeight: Style.space(22)
+
+    Rectangle {
+      anchors.fill: parent
+      radius: Style.cornerRadius
+      color: iconMouse.containsMouse ? Qt.rgba(iconButton.iconColor.r, iconButton.iconColor.g, iconButton.iconColor.b, 0.16) : "transparent"
+      Behavior on color { ColorAnimation { duration: 90 } }
+    }
+
+    Image {
+      anchors.centerIn: parent
+      width: iconButton.iconSize
+      height: iconButton.iconSize
+      source: Qt.resolvedUrl(iconButton.source)
+      sourceSize: Qt.size(64, 64)
+      fillMode: Image.PreserveAspectFit
+
+      // currentColor in the SVG has to become a real color; QML's Image cannot
+      // resolve it, so the glyph is drawn white and recolored here.
+      layer.enabled: true
+      layer.effect: MultiEffect {
+        colorization: 1
+        colorizationColor: iconButton.iconColor
+      }
+    }
+
+    MouseArea {
+      id: iconMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: iconButton.clicked()
+    }
+
+    PanelToolTip {
+      visible: iconMouse.containsMouse && iconButton.tooltip !== ""
+      text: iconButton.tooltip
+      fontFamily: root.fontFamily
+    }
+  }
+
   component HostRow: CursorSurface {
     id: hostRow
     signal activated()
@@ -916,28 +978,28 @@ Panel {
         }
       }
 
-      PanelActionButton {
+      RowIconButton {
         Layout.alignment: Qt.AlignVCenter
-        visible: hostRow.needsKey
-        iconText: "󰌆"
-        tooltipText: "Deploy your SSH key so this host connects without a password"
-        foreground: hostRow.rowColor
+        shown: hostRow.needsKey
+        source: "key.svg"
+        tooltip: "Deploy your SSH key so this host connects without a password"
+        iconColor: hostRow.rowColor
         onClicked: hostRow.deployKeyRequested()
       }
 
-      PanelActionButton {
+      RowIconButton {
         Layout.alignment: Qt.AlignVCenter
-        iconText: "󰅐"
-        tooltipText: "Edit · E"
-        foreground: hostRow.rowColor
+        source: "pencil.svg"
+        tooltip: "Edit · E"
+        iconColor: hostRow.rowColor
         onClicked: hostRow.edit()
       }
 
-      PanelActionButton {
+      RowIconButton {
         Layout.alignment: Qt.AlignVCenter
-        iconText: "󰅃"
-        tooltipText: "Remove · X"
-        foreground: hostRow.rowColor
+        source: "trash.svg"
+        tooltip: "Remove · X"
+        iconColor: hostRow.rowColor
         onClicked: hostRow.remove()
       }
     }
