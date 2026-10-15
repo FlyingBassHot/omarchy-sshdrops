@@ -7,6 +7,18 @@ One icon in the top bar, one panel, no separate app.
 
 ![SSHDrops panel](preview.png)
 
+## Requirements
+
+- Omarchy, with its Quickshell-based shell — this is a bar widget.
+- An OpenSSH **client**: `ssh`, and `ssh-copy-id` for the one-time
+  passwordless setup.
+- `xdg-terminal-exec` (with `uwsm-app`), which Omarchy uses to open the
+  connection in a terminal. `omarchy-notification-send` is used for the
+  failure notification when it is present.
+
+No `sudo` is required. SSHDrops never reads or writes `~/.ssh/config` and
+never handles key material.
+
 ## Install
 
 ```bash
@@ -26,6 +38,17 @@ Then place it wherever you want it in the bar:
 ```bash
 omarchy bar move io.github.flyingbasshot.sshdrops --section right
 ```
+
+## Uninstall
+
+```bash
+omarchy plugin remove io.github.flyingbasshot.sshdrops
+```
+
+That removes the plugin and its bar placement. Your saved host library at
+`~/.local/state/omarchy/sshdrops/hosts.json` is left in place — delete that
+file by hand if you want it gone too. `~/.ssh/config` and your keys are never
+touched, so removing the plugin cannot break an existing ssh setup.
 
 ## Using it
 
