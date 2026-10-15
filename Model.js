@@ -61,8 +61,21 @@ function displayName(host) {
   return host.host
 }
 
-// What we actually hand to ssh: the alias when there is one, otherwise
-// [user@]host. Returns the argument vector, never a shell string.
+// What we actually hand to ssh: the port as `-p <port>` when one is saved,
+// then the alias when there is one, otherwise [user@]host. Returns the
+// argument vector, never a shell string.
+//
+// The option comes first because every caller appends something after the
+// destination (the probe's remote `exit`, nothing at all otherwise) and ssh
+// reads options up to the destination.
+//
+// A port set in the editor is a deliberate override and is emitted even
+// alongside an alias: on the command line `-p` beats the config file's Port,
+// which is what a field the user typed should do, and it applies to the final
+// destination while IdentityFile, ProxyJump, and Match still come from the
+// alias. Entries without a port — which is every imported entry, since an
+// import stores nothing but the alias — emit no `-p` at all, so the config
+// value is used unchanged.
 //
 // An alias wins over a hostname because that is the whole point of using one
 // — it lets ssh resolve IdentityFile, ProxyJump, and Match rules from the
@@ -71,11 +84,21 @@ function displayName(host) {
 // alias is not defined anywhere.
 function destinationArgs(host) {
   if (!host) return []
-  if (host.alias) return [host.alias]
-  var destination = host.host
-  if (destination === "") return []
-  if (host.user) destination = host.user + "@" + destination
-  return [destination]
+  var destination = ""
+  if (host.alias) {
+    destination = host.alias
+  } else if (host.host) {
+    destination = host.user ? host.user + "@" + host.host : host.host
+  } else {
+    return []
+  }
+  // normalizeHost already drops a port that is not a plain number, but this
+  // function is also called on hand-built objects, and a value that reached
+  // argv as anything but digits would be an ssh option injection.
+  var args = []
+  if (host.port && /^\d+$/.test(String(host.port))) args.push("-p", String(host.port))
+  args.push(destination)
+  return args
 }
 
 // The command the panel will run, for display. Mirrors destinationArgs so
@@ -481,9 +504,22 @@ function keyState(probeOk, probeMessage) {
   if (probeOk === true) return "keyed"
   var message = String(probeMessage || "").toLowerCase()
   if (message.indexOf("permission denied") !== -1) return "password"
+  // The server was reached and turned us away, so a key deploy is the fix even
+  // though ssh never got as far as offering to authenticate.
+  if (message.indexOf("too many authentication failures") !== -1) return "password"
   if (message.indexOf("could not resolve") !== -1) return "unresolved"
-  if (message.indexOf("host key verification failed") !== -1) return "unknown"
+  // A changed key is a real, nameable condition with a real remedy, so it gets
+  // its own state instead of being lumped in with "we learned nothing".
+  if (message.indexOf("host key verification failed") !== -1) return "hostkey"
+  if (message.indexOf("remote host identification has changed") !== -1) return "hostkey"
   if (message.indexOf("connection refused") !== -1) return "refused"
+  // Something answered on the port but is not an ssh server, or hung up
+  // mid-handshake. Either way the TCP connect succeeded and the service did
+  // not, which is a refusal as far as the row is concerned.
+  if (message.indexOf("connection closed") !== -1) return "refused"
+  if (message.indexOf("kex_exchange_identification") !== -1) return "refused"
+  if (message.indexOf("banner exchange") !== -1) return "refused"
+  if (message.indexOf("identification string") !== -1) return "refused"
   if (message.indexOf("connection timed out") !== -1) return "unreachable"
   if (message.indexOf("no route to host") !== -1) return "unreachable"
   if (message.indexOf("network is unreachable") !== -1) return "unreachable"
@@ -497,7 +533,10 @@ function keyStateHint(state) {
   if (state === "keyed") return "Key authentication is already set up"
   if (state === "password") return "Needs a password — deploy your key to connect without one"
   if (state === "unresolved") return "Host name does not resolve"
-  if (state === "refused") return "Host refused the connection"
+  if (state === "refused") return "Host refused the connection — check the port"
+  // The port is part of the known_hosts key, so the name of the entry to
+  // remove has to carry it or the stale one survives.
+  if (state === "hostkey") return "Host key changed — remove the old key with ssh-keygen -R [host]:port"
   if (state === "unreachable") return "Host did not answer"
   return ""
 }
@@ -515,6 +554,12 @@ function subtitle(host, resolved) {
   if (port === "22") port = ""
 
   var destination = host.user ? host.user + "@" + (host.host || host.alias) : (host.host || host.alias)
+  // A bare IPv6 literal reads as noise without brackets: `root@fe80::1:2222`
+  // looks like a hostname with a port, not an address with one. This is
+  // display only — the argv keeps the literal unbracketed, which is what ssh
+  // wants.
+  if (host.host && host.host.indexOf(":") !== -1 && host.host.charAt(0) !== "[")
+    destination = (host.user ? host.user + "@[" : "[") + host.host + "]"
   var parts = []
   if (destination !== "") parts.push(port === "" ? destination : destination + ":" + port)
 

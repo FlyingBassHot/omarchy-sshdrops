@@ -53,10 +53,13 @@ Press `A`. Every field except one is optional:
 
 - **Name** — what the row is called. Falls back to the alias, then the hostname.
 - **SSH alias** — a `Host` alias from your `~/.ssh/config`. When this is set,
-  SSHDrops hands `ssh` the alias and nothing else, so OpenSSH keeps applying
-  your own `IdentityFile`, `ProxyJump`, `Port`, and `Match` rules.
+  SSHDrops hands `ssh` the alias, so OpenSSH keeps applying your own
+  `IdentityFile`, `ProxyJump`, `Port`, and `Match` rules.
 - **Hostname** — used when there is no alias.
-- **User**, **Port** — used when there is no alias.
+- **User**, **Port** — used when there is no alias. A **Port** set here is
+  passed as `ssh -p <port>` and therefore overrides the `Port` in your ssh
+  config, even when an alias is also set; it applies to the final destination,
+  while `IdentityFile`, `ProxyJump`, and `Match` still come from the alias.
 - **Group** — sorts your hosts into sections.
 - **Notes** — free text, and searchable.
 
@@ -68,7 +71,8 @@ are skipped, since `Host *` is a defaults block rather than a machine.
 
 Imported entries store **only the alias**. Nothing is copied out of your ssh
 config and nothing is written back to it, so an import can never drift out of
-sync with the settings you actually connect with.
+sync with the settings you actually connect with. An entry with no port emits
+no `-p` at all, so the config's `Port` is used exactly as written.
 
 ## Passwords and keys
 

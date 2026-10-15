@@ -58,11 +58,28 @@ eq("displayName falls back to alias", Model.displayName({ name: "", alias: "p", 
 eq("displayName falls back to host", Model.displayName({ name: "", alias: "", host: "h" }), "h")
 
 eq("alias wins over host",
-   Model.destinationArgs({ alias: "jump", user: "root", host: "1.2.3.4", port: "22" }).join(","), "jump")
+   Model.destinationArgs({ alias: "jump", user: "root", host: "1.2.3.4", port: "22" }).join(","), "-p,22,jump")
+// The port is the whole point: it was collected in the editor and then never
+// reached argv, so every connection, probe, and key deploy dialed 22.
 eq("user@host without alias",
-   Model.destinationArgs({ alias: "", user: "root", host: "1.2.3.4", port: "2222" }).join(","), "root@1.2.3.4")
+   Model.destinationArgs({ alias: "", user: "root", host: "1.2.3.4", port: "2222" }).join(","), "-p,2222,root@1.2.3.4")
 eq("bare host",
    Model.destinationArgs({ alias: "", user: "", host: "example.com", port: "" }).join(","), "example.com")
+// ssh reads options up to the destination, and the probe appends a remote
+// command after it.
+eq("port precedes the destination",
+   Model.destinationArgs({ host: "h", port: "39600" }).indexOf("-p"), 0)
+eq("destination is last",
+   Model.destinationArgs({ host: "h", port: "39600" }).pop(), "h")
+// An imported entry stores only the alias, so it must not grow a -p and must
+// leave the config's Port in charge.
+eq("alias without port emits no -p",
+   Model.destinationArgs({ alias: "bastion" }).join(","), "bastion")
+eq("empty host emits no port args",
+   Model.destinationArgs({ alias: "", host: "", port: "2222" }).length, 0)
+// A non-numeric port must never reach argv, where it would be read as options.
+eq("hostile port is dropped",
+   Model.destinationArgs({ host: "h", port: "-oProxyCommand=touch /tmp/pwn" }).join(","), "h")
 
 eq("empty host not connectable", Model.isConnectable({ alias: "", host: "" }), false)
 eq("alias-only is connectable", Model.isConnectable({ alias: "a", host: "" }), true)
@@ -249,6 +266,13 @@ eq("subtitle shows non-default port",
 eq("subtitle shows jump",
    Model.subtitle({ user: "root", host: "h", alias: "", port: "" }, { port: "22", proxyJump: "bastion" }),
    "root@h · via bastion")
+// Bracketed for reading only; the argv keeps the literal unbracketed.
+eq("subtitle brackets an IPv6 literal",
+   Model.subtitle({ user: "root", host: "fe80::1", alias: "", port: "2222" }, null), "root@[fe80::1]:2222")
+eq("subtitle does not double-bracket",
+   Model.subtitle({ user: "", host: "[fe80::1]", alias: "", port: "" }, null), "[fe80::1]")
+eq("subtitle leaves IPv4 alone",
+   Model.subtitle({ user: "root", host: "10.0.0.1", alias: "", port: "39600" }, null), "root@10.0.0.1:39600")
 
 eq("identity label is basename only",
    Model.identityLabel("/home/someone/.ssh/id_ed25519"), "id_ed25519")
@@ -262,6 +286,9 @@ eq("identity label is basename only",
 
 eq("shown command with hostname", Model.connectCommand({ host: "47.122.111.22" }, "shell"),
    "ssh '47.122.111.22'")
+eq("shown command includes the port",
+   Model.connectCommand({ host: "10.100.210.88", user: "root", port: "39600" }, "shell"),
+   "ssh '-p' '39600' 'root@10.100.210.88'")
 eq("shown command with user", Model.connectCommand({ host: "h", user: "root" }, "shell"),
    "ssh 'root@h'")
 eq("shown command prefers alias over host",
@@ -289,7 +316,20 @@ eq("unresolvable name", Model.keyState(false, "ssh: Could not resolve hostname f
 eq("refused", Model.keyState(false, "ssh: connect to host 1.2.3.4 port 22: Connection refused"), "refused")
 eq("timed out", Model.keyState(false, "ssh: connect to host 1.2.3.4 port 22: Connection timed out"), "unreachable")
 eq("no route", Model.keyState(false, "ssh: connect to host 1.2.3.4 port 22: No route to host"), "unreachable")
-eq("unknown host key", Model.keyState(false, "Host key verification failed."), "unknown")
+eq("unknown host key", Model.keyState(false, "Host key verification failed."), "hostkey")
+eq("changed host key", Model.keyState(false,
+   "@@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@@\nHost key verification failed."), "hostkey")
+eq("too many auth failures still means reached",
+   Model.keyState(false, "Received disconnect from 10.100.210.88 port 39600:2: Too many authentication failures"), "password")
+// This is the message a non-ssh service (or an ssh one that hung up) produces.
+// It used to fall through to "unknown", which left the row with no hint and no
+// deploy button — the failure mode that hid the dropped port in the first place.
+eq("connection closed mid-handshake",
+   Model.keyState(false, "Connection closed by 10.100.210.88 port 22"), "refused")
+eq("non-ssh service on the port",
+   Model.keyState(false, "kex_exchange_identification: Connection closed by remote host"), "refused")
+eq("banner exchange failed",
+   Model.keyState(false, "banner exchange: Connection to 1.2.3.4 port 22: invalid format"), "refused")
 eq("nothing recognizable", Model.keyState(false, "something else entirely"), "unknown")
 eq("no message at all", Model.keyState(false, ""), "unknown")
 
@@ -297,6 +337,9 @@ eq("keyed hint", Model.keyStateHint("keyed"), "Key authentication is already set
 eq("password hint names the fix",
    Model.keyStateHint("password"), "Needs a password — deploy your key to connect without one")
 eq("unknown hint is empty", Model.keyStateHint("unknown"), "")
+eq("refused hint names the port", Model.keyStateHint("refused"), "Host refused the connection — check the port")
+ok("hostkey hint names the fix", Model.keyStateHint("hostkey").indexOf("ssh-keygen -R") !== -1,
+   Model.keyStateHint("hostkey"))
 eq("unreachable hint is plain", Model.keyStateHint("unreachable"), "Host did not answer")
 
 print("")

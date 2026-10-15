@@ -382,9 +382,27 @@ Item {
       return
     }
     probingId = id
+    // BatchMode keeps this a probe: ssh will not prompt, so it either
+    // authenticates with a key or fails immediately.
+    //
+    // ControlPath/ControlMaster are disabled because the probe must prove that
+    // a key works on its own. With a multiplexed session already open, ssh
+    // would ride the existing master and exit 0, reporting "keyed" for a host
+    // that cannot actually authenticate without the session.
+    //
+    // `-n` never reads stdin, so the probe cannot sit on an inherited pipe
+    // nobody will ever close. ConnectTimeout only bounds the TCP connect;
+    // ServerAlive bounds the conversation after it, so a host that accepts the
+    // connection and then goes quiet cannot stall the queue.
     probeProcess.command = [
-      "ssh", "-o", "BatchMode=yes",
+      "ssh", "-n",
+      "-o", "BatchMode=yes",
       "-o", "ConnectTimeout=" + root.keyProbeTimeoutSec,
+      "-o", "ServerAliveInterval=" + root.keyProbeTimeoutSec,
+      "-o", "ServerAliveCountMax=1",
+      "-o", "ConnectionAttempts=1",
+      "-o", "ControlMaster=no",
+      "-o", "ControlPath=none",
       "-o", "StrictHostKeyChecking=accept-new"
     ].concat(destination).concat(["exit"])
     probeProcess.running = true
@@ -450,6 +468,7 @@ Item {
     // so running it twice is safe.
     var script = [
       "sshdrops_copy() { ssh-copy-id -o StrictHostKeyChecking=accept-new " +
+        "-o ConnectTimeout=" + root.keyProbeTimeoutSec + " " +
         destination.map(Util.shellQuote).join(" ") + "; }",
       "sshdrops_copy",
       "sshdrops_rc=$?",

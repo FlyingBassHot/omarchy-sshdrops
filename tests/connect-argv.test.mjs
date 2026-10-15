@@ -64,6 +64,21 @@ eq("user@host",
    buildArgv({ alias: "", user: "deploy", host: "gw.lan" }, "shell").pop(),
    "ssh 'deploy@gw.lan'")
 
+// The saved port has to reach the terminal, not just the panel row, and it has
+// to land before the destination where ssh still reads options.
+eq("port reaches the command",
+   buildArgv({ alias: "", user: "root", host: "10.100.210.88", port: "39600" }, "shell").pop(),
+   "ssh '-p' '39600' 'root@10.100.210.88'")
+eq("port with an alias overrides the config",
+   buildArgv({ alias: "newapi", port: "39600" }, "shell").pop(),
+   "ssh '-p' '39600' 'newapi'")
+eq("no port means no -p",
+   buildArgv({ alias: "bastion" }, "shell").pop(), "ssh 'bastion'")
+
+eq("reconnect keeps the port",
+   buildArgv({ alias: "", user: "root", host: "10.100.210.88", port: "39600" }, "shell-reconnect").pop(),
+   "bash -ic 'ssh '\\''-p'\\'' '\\''39600'\\'' '\\''root@10.100.210.88'\\'''")
+
 eq("reconnect alias",
    buildArgv({ alias: "bastion" }, "shell-reconnect").pop(),
    "bash -ic 'ssh '\\''bastion'\\'''")
@@ -92,16 +107,18 @@ eq("plain mode quotes backticks",
 
 // Every connect must keep the launcher prefix intact and end with exactly one
 // command for bash to run.
-for (const [label, host] of [
+for (const [label, target, port] of [
   ["semicolon", "; rm -rf ~"],
   ["quote", "a'b"],
   ["dollar", "$(id)"],
   ["space", "two words"],
   ["glob", "*"],
-  ["newline", "a\nrm -rf ~"]
+  ["newline", "a\nrm -rf ~"],
+  ["newline with port", "a\nrm -rf ~", "2222"],
+  ["metacharacters with port", "; rm -rf ~", "2222"]
 ]) {
   for (const mode of ["shell", "shell-reconnect"]) {
-    const argv = buildArgv({ host }, mode)
+    const argv = buildArgv({ host: target, port: port || "" }, mode)
     eq(`launcher prefix (${label}/${mode})`, argv.slice(0, 3),
        ["setsid", "uwsm-app", "--"])
     eq(`-e present (${label}/${mode})`, argv.includes("-e"), true)
@@ -120,8 +137,16 @@ for (const [label, host] of [
       .split("\x01").filter(w => w !== "")
 
     eq(`no shell metacharacters execute (${label}/${mode})`, words[0], "ssh")
-    eq(`target is one literal word (${label}/${mode})`, words.length, 2)
-    eq(`target survives intact (${label}/${mode})`, words[1], host)
+    // With a port the argv is `-p <port> <destination>`; without one it is
+    // just the destination. Either way nothing after ssh may execute.
+    eq(`target is one literal word (${label}/${mode})`, words.length, port ? 4 : 2)
+    if (port) {
+      eq(`port option kept (${label}/${mode})`, words[1], "-p")
+      eq(`port value kept (${label}/${mode})`, words[2], port)
+      eq(`target survives intact (${label}/${mode})`, words[3], target)
+    } else {
+      eq(`target survives intact (${label}/${mode})`, words[1], target)
+    }
   }
 }
 
