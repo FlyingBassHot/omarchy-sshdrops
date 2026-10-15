@@ -35,13 +35,25 @@ Click the bar icon (or press your shortcut, see below) to open the panel.
 | -------------- | ------------------------------------------ |
 | `↑` `↓` `j` `k` | Move the cursor                           |
 | `Enter`        | Connect to the selected host               |
+| `/`            | Filter the host list                       |
 | `A`            | Add a host                                 |
 | `E`            | Edit the selected host                     |
 | `X`            | Remove the selected host (asks first)      |
 | `R`            | Rescan for live sessions                   |
 | `K`            | Deploy your SSH key to the selected host   |
 | `I`            | Import `Host` aliases from `~/.ssh/config` |
-| `Esc`          | Close the panel, or step back out of a form |
+| `Esc`          | Close the panel, step out of a form/confirm, or clear the filter |
+
+Filtering never traps the keyboard. Press `/` to focus the filter; while you
+are typing, `↑` and `↓` move the selection without leaving the field and
+`Enter` connects. `Esc` clears the query and hands the keyboard back to the
+list, so the list you return to is never left with a hidden filter on it.
+
+The import view takes `I` to import and `Esc` to close. The delete prompt
+takes `Enter` or `Y` to remove and `Esc` or `N` to keep. In the editor, `Tab`
+moves between fields, `Enter` saves, and `Esc` cancels.
+
+Note that `k` moves the cursor up; only uppercase `K` deploys a key.
 
 Hosts with a live SSH session show a pulsing dot and a `▸` count. They sort to
 the top while you are filtering, so `Enter` reaches something you are already

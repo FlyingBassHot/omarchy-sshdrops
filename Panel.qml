@@ -33,12 +33,22 @@ Panel {
   property var editing: Model.emptyHost()
   property string deleteTargetId: ""
   property bool importOpen: false
+  // The filter field has focus. This is a list sub-mode, not a view: it is
+  // tracked separately because `blocked` is about real text-field focus and
+  // nothing else. Import and delete-confirm are deliberately *not* part of
+  // it — they have no text field, so they keep the dispatcher alive and are
+  // handled by explicit guards in the callbacks below.
+  property bool filterActive: false
 
   readonly property var results: Model.filterHosts(service.hosts, query, service.sessions)
   readonly property var selected: results.length > 0
     ? results[Math.max(0, Math.min(cursorIndex, results.length - 1))].host
     : null
-  readonly property bool editorBlocked: view === "editor" || deleteTargetId !== "" || importOpen
+
+  function enterFilter() {
+    root.filterActive = true
+    search.forceActiveFocus()
+  }
 
   // Key state for the host being edited. An unsaved new host has no probe yet,
   // so the section stays quiet until one is saved.
@@ -117,6 +127,10 @@ Panel {
     service.resolveAll()
     service.probeKeys()
     clampCursor()
+    // Every open starts in the resting state: no stale filter, and the
+    // dispatcher owns the keyboard rather than the search field.
+    root.filterActive = false
+    root.query = ""
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
@@ -206,25 +220,65 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: root.editorBlocked
+      // Blocked only where a text field legitimately owns the keyboard. The
+      // import and delete-confirm states have no text field at all, so
+      // blocking them was what made their documented keys (I, Esc, Enter, Y,
+      // N) silently do nothing.
+      blocked: root.view === "editor" || root.filterActive
 
-      onMoveRequested: function(dx, dy) { if (dy !== 0) root.moveCursor(dy) }
-      onActivateRequested: root.connectSelected()
+      // Move, delete, and tab are ignored while import or delete-confirm owns
+      // the screen; activate and close stay meaningful so Enter/Y/Esc can
+      // finish it. Inlined rather than held as a property because `root` here
+      // is the Panel, not this item — a property on keyCatcher would have to
+      // be read as keyCatcher.* and a `root.` reference silently resolved to
+      // undefined, leaving every guard permanently false.
+
+      onMoveRequested: function(dx, dy) {
+        if (root.deleteTargetId !== "" || root.importOpen) return
+        if (dy !== 0) root.moveCursor(dy)
+      }
+      onActivateRequested: {
+        if (root.deleteTargetId !== "") root.confirmDelete()
+        else if (!root.importOpen) root.connectSelected()
+      }
       onCloseRequested: {
-        if (root.view !== "list") root.closeEditor()
+        if (root.deleteTargetId !== "") root.cancelDelete()
         else if (root.importOpen) root.importOpen = false
+        else if (root.view !== "list") root.closeEditor()
         else root.close()
       }
-      onDeleteRequested: if (root.selected && root.view === "list") root.requestDelete(root.selected)
-      onTabRequested: function(direction) { root.switchPanel(direction) }
+      onDeleteRequested: {
+        if (root.deleteTargetId !== "" || root.importOpen) return
+        if (root.selected && root.view === "list") root.requestDelete(root.selected)
+      }
+      onTabRequested: function(direction) {
+        if (root.deleteTargetId !== "" || root.importOpen) return
+        root.switchPanel(direction)
+      }
 
       onTextKey: function(text) {
         var key = text.toLowerCase()
+
+        // Delete-confirm owns the letter keys: Y confirms, N cancels, and
+        // anything else is swallowed rather than firing a command behind the
+        // prompt.
+        if (root.deleteTargetId !== "") {
+          if (key === "y") root.confirmDelete()
+          else if (key === "n") root.cancelDelete()
+          return
+        }
+
         if (root.importOpen) {
           if (key === "i") { service.commitImport(); root.importOpen = false }
           return
         }
+
         if (root.view !== "list") return
+
+        // `/` is the only way into the filter, so it has to be handled here
+        // rather than by the field itself.
+        if (key === "/") { root.enterFilter(); return }
+
         if (key === "a") root.openEditor(null)
         else if (key === "e") root.openEditor(root.selected)
         else if (key === "r") service.refreshSessions()
@@ -232,6 +286,8 @@ Panel {
           service.importFromSshConfig()
           root.importOpen = true
         }
+        // Uppercase only: PanelKeyCatcher consumes lowercase k as "move up"
+        // before onTextKey ever sees it.
         else if (key === "k" && root.selected && (service.keyStates[root.selected.id] || "") === "password")
           service.deployKey(root.selected)
       }
@@ -259,7 +315,10 @@ Panel {
               ? "No hosts saved yet"
               : service.hosts.length + (service.hosts.length === 1 ? " host" : " hosts")
                 + (service.liveCount > 0 ? " · " + service.liveCount + " live" : "")
-            detail: root.view === "editor" ? "Editing" : (root.deleteTargetId !== "" ? "Confirm delete" : "")
+            detail: root.view === "editor" ? "Editing"
+              : root.deleteTargetId !== "" ? "Confirm delete"
+              : root.importOpen ? "Import"
+              : root.filterActive ? "Filter" : ""
             foreground: root.foreground
             fontFamily: root.fontFamily
             iconComponent: Component {
@@ -284,7 +343,7 @@ Panel {
               width: parent.width
               foreground: root.foreground
               placeholderText: service.hosts.length > 0
-                ? "Filter hosts…"
+                ? "Filter hosts…  (press /)"
                 : "Press A to add your first host"
               text: root.query
               verticalPadding: Style.space(4)
@@ -292,9 +351,32 @@ Panel {
                 root.query = text
                 root.cursorIndex = 0
               }
+              // One-directional: a mouse click into the field must also enter
+              // filter mode, but focus must never silently leave filter mode
+              // and hand the keyboard back mid-edit.
+              onActiveFocusChanged: if (activeFocus) root.filterActive = true
               Keys.onPressed: function(event) {
-                if (event.key === Qt.Key_Down) {
+                // Esc is the only way out of the filter, so it clears the
+                // query on the way rather than leaving a hidden filter
+                // behind on the list.
+                if (event.key === Qt.Key_Escape) {
+                  root.query = ""
+                  root.filterActive = false
                   keyCatcher.forceActiveFocus()
+                  event.accepted = true
+                  return
+                }
+                // The selection still moves while typing, without dropping out
+                // of the field — the old behavior handed focus back to the
+                // dispatcher on the first Down, which stranded the filter.
+                if (event.key === Qt.Key_Down) {
+                  root.moveCursor(1)
+                  event.accepted = true
+                } else if (event.key === Qt.Key_Up) {
+                  root.moveCursor(-1)
+                  event.accepted = true
+                } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                  root.connectSelected()
                   event.accepted = true
                 }
               }
@@ -362,7 +444,7 @@ Panel {
             Text {
               visible: service.hosts.length > 0 && root.query === ""
               width: parent.width
-              text: "↑↓ move · Enter connect · E edit · A add · X delete · R refresh"
+              text: "↑↓ move · Enter connect · / filter · E edit · A add · X delete · R refresh"
                 + (service.importEnabled ? " · I import" : "")
                 + " · K deploy key"
               color: root.dim
@@ -766,6 +848,15 @@ Panel {
                 onClicked: root.cancelDelete()
               }
             }
+
+            Text {
+              width: parent.width
+              text: "Enter or Y removes · Esc or N keeps"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              horizontalAlignment: Text.AlignHCenter
+            }
           }
         }
       }
@@ -1031,6 +1122,14 @@ Panel {
       verticalPadding: Style.space(4)
       onTextChanged: field.edited(text)
       Keys.onPressed: function(event) {
+        // Esc cancels. The dispatcher is blocked in the editor (a text field
+        // has focus), so the field is the only thing that can offer it —
+        // before this, an unsaved edit was un-abandonable by keyboard.
+        if (event.key === Qt.Key_Escape) {
+          root.closeEditor()
+          event.accepted = true
+          return
+        }
         if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
           root.saveEditor()
           event.accepted = true
