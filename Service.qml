@@ -61,6 +61,8 @@ Item {
     onFileChanged: root.load()
     onLoaded: root.applyLibrary(text())
     onLoadFailed: root.applyLibrary("")
+    // Keep the library owner-only after every write, not just the first.
+    onSaved: Qt.callLater(function() { fileModeProcess.running = true })
   }
 
   function load() {
@@ -95,25 +97,59 @@ Item {
 
   // Write the library atomically. Creating the state directory first is the
   // only reason this touches the filesystem outside the plugin's own paths.
+  //
+  // The library names private infrastructure — hostnames, users, ports, and
+  // free-text notes — so both the directory and the file are restricted to the
+  // owner. A plain `mkdir -p` under a umask of 022 leaves a 0755 directory and
+  // an atomic write leaves a 0644 file, which any other local user could read.
+  // The directory is tightened before anything is written into it, so there is
+  // no window in which the file is both present and reachable by someone else.
   function persist() {
     saving = true
     root.lastError = ""
-    mkdirProcess.command = ["mkdir", "-p", root.stateDir]
+    mkdirProcess.running = true
+  }
+
+  // Bring a library written by an earlier version from 0755/0644 up to
+  // 0700/0600 even before the next save. Best effort: a path that is already
+  // correct is a no-op.
+  function hardenPermissions() {
     mkdirProcess.running = true
   }
 
   Process {
     id: mkdirProcess
-    running: false
+    command: ["mkdir", "-p", root.stateDir]
     onExited: function(exitCode) {
-      root.saving = false
       if (exitCode !== 0) {
+        root.saving = false
         root.lastError = "Could not create " + root.stateDir
         return
       }
-      libraryFile.setText(Model.serializeHosts(root.hosts))
-      root.resolveAll()
+      Qt.callLater(function() { dirModeProcess.running = true })
     }
+  }
+
+  Process {
+    id: dirModeProcess
+    command: ["chmod", "700", root.stateDir]
+    onExited: function() {
+      if (root.saving) {
+        root.saving = false
+        libraryFile.setText(Model.serializeHosts(root.hosts))
+        root.resolveAll()
+      } else {
+        // Startup hardening: no write is pending, so move on to the file.
+        Qt.callLater(function() { fileModeProcess.running = true })
+      }
+    }
+  }
+
+  // An atomic write always lands 0644 under the default umask, so tighten the
+  // file after every save as well.
+  Process {
+    id: fileModeProcess
+    command: ["chmod", "600", root.libraryPath]
   }
 
   function nextId(hosts) {
@@ -563,5 +599,8 @@ Item {
   Component.onCompleted: {
     root.load()
     root.refreshSessions()
+    // Fix a 0755 directory / 0644 library left by an earlier version even if
+    // the user never saves again.
+    root.hardenPermissions()
   }
 }
