@@ -58,34 +58,37 @@ eq("launcher prefix is stable",
 // reused tty that scrambles an existing terminal's display.
 eq("-e is present", plain.includes("-e"), true)
 eq("command runs under bash -c", plain.slice(-3, -1), ["bash", "-c"])
-eq("plain alias", plain[plain.length - 1], "ssh 'bastion'")
+eq("plain alias", plain[plain.length - 1], "ssh '--' 'bastion'")
 
 eq("user@host",
    buildArgv({ alias: "", user: "deploy", host: "gw.lan" }, "shell").pop(),
-   "ssh 'deploy@gw.lan'")
+   "ssh '--' 'deploy@gw.lan'")
 
 // The saved port has to reach the terminal, not just the panel row, and it has
 // to land before the destination where ssh still reads options.
+//
+// `--` rides along on every invocation: it ends ssh's option parsing so a
+// destination can never be read as an option (SECURITY-AUDIT.md H1).
 eq("port reaches the command",
    buildArgv({ alias: "", user: "root", host: "10.100.210.88", port: "39600" }, "shell").pop(),
-   "ssh '-p' '39600' 'root@10.100.210.88'")
+   "ssh '-p' '39600' '--' 'root@10.100.210.88'")
 eq("port with an alias overrides the config",
    buildArgv({ alias: "newapi", port: "39600" }, "shell").pop(),
-   "ssh '-p' '39600' 'newapi'")
+   "ssh '-p' '39600' '--' 'newapi'")
 eq("no port means no -p",
-   buildArgv({ alias: "bastion" }, "shell").pop(), "ssh 'bastion'")
+   buildArgv({ alias: "bastion" }, "shell").pop(), "ssh '--' 'bastion'")
 
 eq("reconnect keeps the port",
    buildArgv({ alias: "", user: "root", host: "10.100.210.88", port: "39600" }, "shell-reconnect").pop(),
-   "bash -ic 'ssh '\\''-p'\\'' '\\''39600'\\'' '\\''root@10.100.210.88'\\'''")
+   "bash -ic 'ssh '\\''-p'\\'' '\\''39600'\\'' '\\''--'\\'' '\\''root@10.100.210.88'\\'''")
 
 eq("reconnect alias",
    buildArgv({ alias: "bastion" }, "shell-reconnect").pop(),
-   "bash -ic 'ssh '\\''bastion'\\'''")
+   "bash -ic 'ssh '\\''--'\\'' '\\''bastion'\\'''")
 
 eq("reconnect user@host",
    buildArgv({ alias: "", user: "deploy", host: "gw.lan" }, "shell-reconnect").pop(),
-   "bash -ic 'ssh '\\''deploy@gw.lan'\\'''")
+   "bash -ic 'ssh '\\''--'\\'' '\\''deploy@gw.lan'\\'''")
 
 // ------------------------------------------------------------ hostile hosts
 //
@@ -94,16 +97,16 @@ eq("reconnect user@host",
 // in a string rather than passed as an argv element.
 
 eq("plain mode quotes the semicolon",
-   buildArgv({ host: "; rm -rf ~" }, "shell").pop(), "ssh '; rm -rf ~'")
+   buildArgv({ host: "; rm -rf ~" }, "shell").pop(), "ssh '--' '; rm -rf ~'")
 
 eq("plain mode escapes a single quote",
-   buildArgv({ host: "a'b" }, "shell").pop(), "ssh 'a'\\''b'")
+   buildArgv({ host: "a'b" }, "shell").pop(), "ssh '--' 'a'\\''b'")
 
 eq("plain mode quotes command substitution",
-   buildArgv({ host: "$(id)" }, "shell").pop(), "ssh '$(id)'")
+   buildArgv({ host: "$(id)" }, "shell").pop(), "ssh '--' '$(id)'")
 
 eq("plain mode quotes backticks",
-   buildArgv({ host: "`id`" }, "shell").pop(), "ssh '`id`'")
+   buildArgv({ host: "`id`" }, "shell").pop(), "ssh '--' '`id`'")
 
 // Every connect must keep the launcher prefix intact and end with exactly one
 // command for bash to run.
@@ -137,16 +140,17 @@ for (const [label, target, port] of [
       .split("\x01").filter(w => w !== "")
 
     eq(`no shell metacharacters execute (${label}/${mode})`, words[0], "ssh")
-    // With a port the argv is `-p <port> <destination>`; without one it is
-    // just the destination. Either way nothing after ssh may execute.
-    eq(`target is one literal word (${label}/${mode})`, words.length, port ? 4 : 2)
+    // With a port the argv is `-p <port> -- <destination>`; without one it is
+    // `-- <destination>`. Either way nothing after ssh may execute, and the
+    // destination stays a single literal word after the `--` marker.
+    const end = port ? 5 : 3
+    eq(`target is one literal word (${label}/${mode})`, words.length, end)
+    eq(`option terminator kept (${label}/${mode})`, words[end - 2], "--")
     if (port) {
       eq(`port option kept (${label}/${mode})`, words[1], "-p")
       eq(`port value kept (${label}/${mode})`, words[2], port)
-      eq(`target survives intact (${label}/${mode})`, words[3], target)
-    } else {
-      eq(`target survives intact (${label}/${mode})`, words[1], target)
     }
+    eq(`target survives intact (${label}/${mode})`, words[end - 1], target)
   }
 }
 

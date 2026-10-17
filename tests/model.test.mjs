@@ -58,13 +58,13 @@ eq("displayName falls back to alias", Model.displayName({ name: "", alias: "p", 
 eq("displayName falls back to host", Model.displayName({ name: "", alias: "", host: "h" }), "h")
 
 eq("alias wins over host",
-   Model.destinationArgs({ alias: "jump", user: "root", host: "1.2.3.4", port: "22" }).join(","), "-p,22,jump")
+   Model.destinationArgs({ alias: "jump", user: "root", host: "1.2.3.4", port: "22" }).join(","), "-p,22,--,jump")
 // The port is the whole point: it was collected in the editor and then never
 // reached argv, so every connection, probe, and key deploy dialed 22.
 eq("user@host without alias",
-   Model.destinationArgs({ alias: "", user: "root", host: "1.2.3.4", port: "2222" }).join(","), "-p,2222,root@1.2.3.4")
+   Model.destinationArgs({ alias: "", user: "root", host: "1.2.3.4", port: "2222" }).join(","), "-p,2222,--,root@1.2.3.4")
 eq("bare host",
-   Model.destinationArgs({ alias: "", user: "", host: "example.com", port: "" }).join(","), "example.com")
+   Model.destinationArgs({ alias: "", user: "", host: "example.com", port: "" }).join(","), "--,example.com")
 // ssh reads options up to the destination, and the probe appends a remote
 // command after it.
 eq("port precedes the destination",
@@ -74,12 +74,12 @@ eq("destination is last",
 // An imported entry stores only the alias, so it must not grow a -p and must
 // leave the config's Port in charge.
 eq("alias without port emits no -p",
-   Model.destinationArgs({ alias: "bastion" }).join(","), "bastion")
+   Model.destinationArgs({ alias: "bastion" }).join(","), "--,bastion")
 eq("empty host emits no port args",
    Model.destinationArgs({ alias: "", host: "", port: "2222" }).length, 0)
 // A non-numeric port must never reach argv, where it would be read as options.
 eq("hostile port is dropped",
-   Model.destinationArgs({ host: "h", port: "-oProxyCommand=touch /tmp/pwn" }).join(","), "h")
+   Model.destinationArgs({ host: "h", port: "-oProxyCommand=touch /tmp/pwn" }).join(","), "--,h")
 
 eq("empty host not connectable", Model.isConnectable({ alias: "", host: "" }), false)
 eq("alias-only is connectable", Model.isConnectable({ alias: "a", host: "" }), true)

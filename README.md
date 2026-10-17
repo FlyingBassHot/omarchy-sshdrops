@@ -50,6 +50,31 @@ That removes the plugin and its bar placement. Your saved host library at
 file by hand if you want it gone too. `~/.ssh/config` and your keys are never
 touched, so removing the plugin cannot break an existing ssh setup.
 
+## Security model
+
+- **A saved host can never become an ssh option.** Host names, users, and
+  aliases are validated: anything starting with `-` is rejected by the editor
+  and refused again at the point where the command is built, and every
+  invocation also passes `--` immediately before the destination. Values are
+  shell-quoted on top of that, so neither a shell nor ssh can be talked into
+  running something a saved field asked for.
+- **The library is private to you.** It lives at
+  `$XDG_STATE_HOME/omarchy/sshdrops/hosts.json` in a `0700` directory as a
+  `0600` file. If the directory cannot be tightened, the plugin reports the
+  error instead of writing.
+- **Probing never trusts a host key for you.** The key check uses a throwaway
+  known-hosts file and never writes your real `~/.ssh/known_hosts`, so opening
+  the panel cannot silently record a key. Your first real connection to a new
+  host prompts for its fingerprint as usual, and connecting after a host-key
+  change still fails loudly.
+- **Nothing is stored that isn't already yours.** No password or key material
+  is read, written, or passed through a command line, and the plugin never
+  writes to `~/.ssh/config`.
+- **Trusted inputs.** Commands are resolved through the login `PATH`, so `ssh`
+  is whatever your login environment provides, and the state directory comes
+  from `XDG_STATE_HOME`, which is trusted as your own. The plugin runs inside
+  `omarchy-shell` with your privileges and no extra sandbox.
+
 ## Using it
 
 Click the bar icon (or press your shortcut, see below) to open the panel.
@@ -248,11 +273,12 @@ reaches the panel.
 
 ## Privacy
 
-The only network traffic SSHDrops causes is the SSH connection you asked for.
-Session status comes from reading `ps` output, and connection details come from
-`ssh -G`, which resolves configuration **without connecting**. Nothing is
-probed, scanned, or uploaded, and no host is ever contacted except by pressing
-`Enter`.
+The only network traffic SSHDrops causes is the SSH connection you asked for,
+plus the key check it runs for saved hosts so a row can show whether a key
+already works. Session status comes from reading `ps` output, and connection
+details come from `ssh -G`, which resolves configuration **without connecting**.
+Nothing is uploaded or exported, and no host is ever contacted beyond the
+connections the panel starts for you when you open it.
 
 ## Tests
 
@@ -260,6 +286,7 @@ probed, scanned, or uploaded, and no host is ever contacted except by pressing
 node tests/model.test.mjs
 node tests/connect-argv.test.mjs
 node tests/connect-script.test.mjs
+node tests/security.test.mjs
 ```
 
 All three load `Model.js` directly — the same file the panel imports.

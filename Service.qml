@@ -25,6 +25,10 @@ Item {
   property var resolved: ({})
   property bool loading: false
   property bool saving: false
+  // True only between a real save and the chmod that follows it, so a failing
+  // file-mode fix is reported for a write we performed and not for a startup
+  // pass over a file that may not exist yet.
+  property bool verifyFileMode: false
   property string lastError: ""
   property bool libraryMissing: false
 
@@ -106,6 +110,7 @@ Item {
   // no window in which the file is both present and reachable by someone else.
   function persist() {
     saving = true
+    verifyFileMode = false
     root.lastError = ""
     mkdirProcess.running = true
   }
@@ -114,6 +119,7 @@ Item {
   // 0700/0600 even before the next save. Best effort: a path that is already
   // correct is a no-op.
   function hardenPermissions() {
+    verifyFileMode = false
     mkdirProcess.running = true
   }
 
@@ -133,9 +139,18 @@ Item {
   Process {
     id: dirModeProcess
     command: ["chmod", "700", root.stateDir]
-    onExited: function() {
+    onExited: function(exitCode) {
+      if (exitCode !== 0) {
+        // Without a 0700 directory the library would be readable by every
+        // local user, so refuse to write rather than leak it.
+        root.saving = false
+        root.verifyFileMode = false
+        root.lastError = "Could not restrict permissions on " + root.stateDir
+        return
+      }
       if (root.saving) {
         root.saving = false
+        root.verifyFileMode = true
         libraryFile.setText(Model.serializeHosts(root.hosts))
         root.resolveAll()
       } else {
@@ -146,14 +161,20 @@ Item {
   }
 
   // An atomic write always lands 0644 under the default umask, so tighten the
-  // file after every save as well.
+  // file after every save as well. A failure here is reported only for a save
+  // we just performed; at startup the file may not exist yet.
   Process {
     id: fileModeProcess
     command: ["chmod", "600", root.libraryPath]
+    onExited: function(exitCode) {
+      if (exitCode === 0 || !root.verifyFileMode) return
+      root.verifyFileMode = false
+      root.lastError = "Saved, but could not restrict permissions on " + root.libraryPath
+    }
   }
 
   function nextId(hosts) {
-    var used = {}
+    var used = Object.create(null)
     for (var i = 0; i < hosts.length; i++) used[hosts[i].id] = true
     var n = 1
     while (used["host-" + n]) n++
@@ -216,10 +237,16 @@ Item {
   property var resolveQueue: []
   property string resolvingId: ""
 
+  // Opening the panel runs `ssh -G` then a batch probe for each host. Bound how
+  // many hosts that pass may touch so a hostile or accidentally huge library
+  // cannot fork thousands of ssh processes — i.e. turn panel-open into a LAN
+  // scan and CPU/memory spike.
+  readonly property int autoProbeLimit: 300
+
   function resolveAll() {
     resolveQueue = []
     resolvingId = ""
-    for (var i = 0; i < root.hosts.length; i++) resolveQueue.push(root.hosts[i].id)
+    for (var i = 0; i < root.hosts.length && i < root.autoProbeLimit; i++) resolveQueue.push(root.hosts[i].id)
     pumpResolveQueue()
   }
 
@@ -267,7 +294,7 @@ Item {
     var id = root.resolvingId
     if (id === "") return
     var parsed = Model.parseSshConfig(output)
-    var next = {}
+    var next = Object.create(null)
     for (var key in root.resolved) next[key] = root.resolved[key]
     if (parsed.ok) next[id] = parsed
     else delete next[id]
@@ -388,19 +415,17 @@ Item {
   property var probingId: ""
   property var probeQueue: []
 
-  readonly property bool hasLocalKey: keyFileListed
-
-  property bool keyFileListed: false
   property string keyProbeTimeoutSec: intSetting("keyProbeTimeoutSec", 5, 2, 15)
 
   // Ask ssh whether a key already works. Runs one host at a time behind a
-  // queue so a library of hosts does not open a burst of connections, and
-  // StrictHostKeyChecking=accept-new means an unknown host is recorded rather
-  // than blocking on a prompt this process could never answer.
+  // queue so a library of hosts does not open a burst of connections, and the
+  // throwaway known_hosts file below means an unknown host is neither trusted
+  // nor recorded: the probe stays non-interactive without writing anything to
+  // the real ~/.ssh/known_hosts.
   function probeKeys() {
     probeQueue = []
     probingId = ""
-    for (var i = 0; i < root.hosts.length; i++) probeQueue.push(root.hosts[i].id)
+    for (var i = 0; i < root.hosts.length && i < root.autoProbeLimit; i++) probeQueue.push(root.hosts[i].id)
     pumpProbeQueue()
   }
 
@@ -439,7 +464,13 @@ Item {
       "-o", "ConnectionAttempts=1",
       "-o", "ControlMaster=no",
       "-o", "ControlPath=none",
-      "-o", "StrictHostKeyChecking=accept-new"
+      // The probe must not write the real known_hosts: silently trusting a
+      // first-seen key on every panel open is the TOFU gap we are closing. A
+      // throwaway known_hosts keeps the probe non-interactive without
+      // persisting trust; the real connect still verifies (and prompts) as
+      // normal, so a changed key is still caught at connect time.
+      "-o", "StrictHostKeyChecking=no",
+      "-o", "UserKnownHostsFile=/dev/null"
     ].concat(destination).concat(["exit"])
     probeProcess.running = true
   }
@@ -462,7 +493,7 @@ Item {
       var id = root.probingId
       if (id !== "") {
         var message = String(root.probeError || "") + "\n" + String(root.probeOutput || "")
-        var next = {}
+        var next = Object.create(null)
         for (var key in root.keyStates) next[key] = root.keyStates[key]
         next[id] = Model.keyState(exitCode === 0, message)
         root.keyStates = next
@@ -502,9 +533,11 @@ Item {
     var label = Model.displayName(host)
     // copy-id appends to authorized_keys on the far side and is idempotent,
     // so running it twice is safe.
+    //
+    // No StrictHostKeyChecking here: this runs on an interactive tty, so the
+    // host-key prompt is expected and must not be suppressed.
     var script = [
-      "sshdrops_copy() { ssh-copy-id -o StrictHostKeyChecking=accept-new " +
-        "-o ConnectTimeout=" + root.keyProbeTimeoutSec + " " +
+      "sshdrops_copy() { ssh-copy-id -o ConnectTimeout=" + root.keyProbeTimeoutSec + " " +
         destination.map(Util.shellQuote).join(" ") + "; }",
       "sshdrops_copy",
       "sshdrops_rc=$?",
@@ -565,7 +598,7 @@ Item {
 
   function applyImport(output) {
     var aliases = Model.parseSshConfigHosts(output)
-    var existing = {}
+    var existing = Object.create(null)
     for (var i = 0; i < root.hosts.length; i++) existing[root.hosts[i].alias] = true
 
     var candidates = []

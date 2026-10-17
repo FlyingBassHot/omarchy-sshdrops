@@ -12,6 +12,10 @@
 // destination from the fields below.
 var MODES = ["shell", "shell-reconnect"]
 
+// Bounds so a hostile or bloated library cannot turn the panel into a memory
+// bomb. 1 MiB is far more than a realistic host list needs.
+var MAX_LIBRARY_BYTES = 1048576
+
 function emptyHost() {
   return {
     id: "",
@@ -30,23 +34,37 @@ function trim(value) {
   return String(value === undefined || value === null ? "" : value).trim()
 }
 
+// A single-line stored field: strings and finite numbers only, control
+// characters stripped. Objects, arrays, booleans, and null collapse to "" so a
+// hand-edited library cannot coerce `["a","b"]` into a connectable host (L2),
+// and a saved name cannot carry escape sequences into a notification (L1).
+function text(value) {
+  if (typeof value === "number" && isFinite(value)) return String(value)
+  return typeof value === "string" ? value : ""
+}
+
+function field(value) {
+  return text(value).replace(/[\u0000-\u001F\u007F-\u009F]/g, "").trim()
+}
+
 // Coerce anything the editor or an import produced into a stored host. An
 // unknown mode is dropped rather than persisted, so a hand-edited library
-// cannot smuggle an arbitrary string into the ssh invocation.
+// cannot smuggle an arbitrary string into the ssh invocation. A wrong-typed
+// value becomes empty rather than being stringified into something connectable.
 function normalizeHost(raw) {
   raw = raw || {}
   var host = {
-    id: trim(raw.id),
-    name: trim(raw.name),
-    host: trim(raw.host),
-    user: trim(raw.user),
-    port: trim(raw.port),
-    alias: trim(raw.alias),
-    group: trim(raw.group),
-    notes: trim(raw.notes),
+    id: field(raw.id),
+    name: field(raw.name),
+    host: field(raw.host),
+    user: field(raw.user),
+    port: field(raw.port),
+    alias: field(raw.alias),
+    group: field(raw.group),
+    notes: field(raw.notes),
     mode: ""
   }
-  if (MODES.indexOf(trim(raw.mode)) !== -1) host.mode = trim(raw.mode)
+  if (MODES.indexOf(text(raw.mode)) !== -1) host.mode = text(raw.mode)
   if (host.port !== "" && !/^\d+$/.test(host.port)) host.port = ""
   return host
 }
@@ -92,21 +110,37 @@ function destinationArgs(host) {
   } else {
     return []
   }
+
+  // A destination that starts with a dash is read by ssh (and by ssh-copy-id,
+  // where `--` does not survive getopts) as an OPTION, not a host: a saved
+  // `-oProxyCommand=…` becomes arbitrary code execution, executed
+  // automatically by the key probe on panel open. This is the single choke
+  // point every caller goes through, so refusing here disarms all of them.
+  if (String(destination).charAt(0) === "-") return []
+
   // normalizeHost already drops a port that is not a plain number, but this
   // function is also called on hand-built objects, and a value that reached
   // argv as anything but digits would be an ssh option injection.
   var args = []
   if (host.port && /^\d+$/.test(String(host.port))) args.push("-p", String(host.port))
-  args.push(destination)
+
+  // `--` ends option parsing for ssh as defence in depth. It is pushed after
+  // the options and immediately before the destination.
+  args.push("--", destination)
   return args
 }
 
 // The command the panel will run, for display. Mirrors destinationArgs so
 // what the user reads is exactly what gets executed.
 function connectCommand(host, mode) {
-  var destination = destinationArgs(host)
-  if (destination.length === 0) return ""
-  var quoted = destination.map(shellQuote).join(" ")
+  var args = destinationArgs(host)
+  if (args.length === 0) return ""
+  // `--` is an argv-safety marker, not part of the command the user reads.
+  var shown = []
+  for (var i = 0; i < args.length; i++) {
+    if (args[i] !== "--") shown.push(args[i])
+  }
+  var quoted = shown.map(shellQuote).join(" ")
   return mode === "shell-reconnect" ? "bash -ic 'ssh " + quoted + "'" : "ssh " + quoted
 }
 
@@ -167,6 +201,12 @@ function validateHost(raw) {
   if (host.alias === "" && host.host === "") problems.push("Set a hostname or an ssh alias")
   if (host.host !== "" && /\s/.test(host.host)) problems.push("Hostname cannot contain spaces")
   if (host.user !== "" && /\s/.test(host.user)) problems.push("User cannot contain spaces")
+  // A leading dash would be read by ssh as an option rather than a host, which
+  // turns a saved field into command execution.
+  if (host.host !== "" && host.host.charAt(0) === "-") problems.push("Hostname cannot start with a dash")
+  if (host.user !== "" && host.user.charAt(0) === "-") problems.push("User cannot start with a dash")
+  if (host.alias !== "" && host.alias.charAt(0) === "-") problems.push("Alias cannot start with a dash")
+  if (host.alias !== "" && /\s/.test(host.alias)) problems.push("Alias cannot contain spaces")
   // normalizeHost drops a port that is not a plain number, so anything left
   // here is either empty or in range-checkable form.
   if (host.port !== "") {
@@ -176,10 +216,14 @@ function validateHost(raw) {
   return problems
 }
 
-function parseHosts(text) {
+function parseHosts(textInput) {
+  var raw = String(textInput || "")
+  if (raw.length > MAX_LIBRARY_BYTES)
+    return { ok: false, hosts: [], error: "Library is too large" }
+
   var parsed = null
   try {
-    parsed = JSON.parse(String(text || ""))
+    parsed = JSON.parse(raw)
   } catch (e) {
     return { ok: false, hosts: [], error: "Library is not valid JSON" }
   }
@@ -187,7 +231,9 @@ function parseHosts(text) {
   if (!list) return { ok: false, hosts: [], error: "Library has no \"hosts\" array" }
 
   var hosts = []
-  var seen = {}
+  // Null prototype: an id of "__proto__" or "constructor" must be an ordinary
+  // key, not a write to Object.prototype (L7).
+  var seen = Object.create(null)
   for (var i = 0; i < list.length; i++) {
     var host = normalizeHost(list[i])
     if (!isConnectable(host)) continue
@@ -209,7 +255,7 @@ function serializeHosts(hosts) {
 // ungrouped host sorts last rather than under an empty heading.
 function sortHosts(hosts) {
   var groupOrder = []
-  var byGroup = {}
+  var byGroup = Object.create(null)
   for (var i = 0; i < hosts.length; i++) {
     var key = trim(hosts[i].group) || ""
     if (!(key in byGroup)) {
@@ -369,6 +415,10 @@ function parseSshConfigHosts(text) {
         if (pattern === "") continue
         if (pattern.charAt(0) === "!") continue
         if (/[*?]/.test(pattern)) continue
+        // Only tokens that are valid ssh destination names. This drops
+        // `-oProxyCommand=…`, `'quoted'`, `"dq"`, and `=weird` before an
+        // import can turn them into a saved host.
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(pattern)) continue
         hosts.push(pattern)
       }
       continue
@@ -376,7 +426,7 @@ function parseSshConfigHosts(text) {
     if (key === "match") inHostBlock = false
   }
 
-  var seen = {}
+  var seen = Object.create(null)
   var unique = []
   for (var h = 0; h < hosts.length; h++) {
     if (seen[hosts[h]]) continue
@@ -428,7 +478,7 @@ function sessionDestination(argsText) {
 // both appear, which is exactly what "how many sessions is this host running"
 // should mean.
 function parseSessions(psText) {
-  var counts = {}
+  var counts = Object.create(null)
   var lines = String(psText || "").split("\n")
   for (var i = 0; i < lines.length; i++) {
     var line = lines[i]
@@ -453,7 +503,7 @@ function parseSessions(psText) {
 // hand with `ssh host` and one started from the panel with `ssh user@host`
 // are the same connection to the same machine.
 function liveSessionMap(hosts, counts) {
-  var map = {}
+  var map = Object.create(null)
   if (!counts) return map
   for (var i = 0; i < hosts.length; i++) {
     var host = hosts[i]
